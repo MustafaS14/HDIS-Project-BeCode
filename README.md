@@ -1,4 +1,4 @@
-# <strong><span style="font-size: 3em;">💻🛡️ HDIS-Project-BeCode</span></strong>
+# <strong><span style="font-size: 3em;">💻🛡️ HIDS-Project-BeCode</span></strong>
 
 ## <strong><span style="font-size: 2em;">Bash-Based Host Intrusion Detection System (HIDS)</span></strong>
 ### <strong><span style="font-size: 1.4em;">A Linux Capstone Project by a 3-Person Team</span></strong>
