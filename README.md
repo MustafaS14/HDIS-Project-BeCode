@@ -113,6 +113,13 @@ chmod +x ./elk_ship.sh
 	- Example KQL: `severity : "HIGH" or severity : "WARNING"`
 	- This will populate the Alerts screen once matching events are indexed.
 
+## ELK-provided snippet (reference)
+The exact snippet returned by ELK has been included in this repository at `elk_snippet_from_elk.sh`.
+
+- It uses `jq` and username/password authentication.
+- It is kept for reference and compatibility with Elastic examples.
+- The project's default integration path remains `elk_ship.sh`, which uses Bash + curl + API key auth and offset tracking.
+
 ## Security note
 This tool is intended for educational, testing, and local monitoring use. It does not replace a full enterprise security stack or endpoint detection solution.
 
