@@ -62,12 +62,12 @@ On systems without root permissions, the script attempts to add a user crontab e
 ## Output files
 The project stores working files in the .hids directory:
 
-- .hids/hids.log — persistent JSON alert log, ready for ELK/Filebeat ingestion
-- .hids/summary.txt — summary report generated after each run
-- .hids/baseline/ — saved baseline snapshots
+- .hids/hids.log - persistent JSON alert log, ready for ELK/Filebeat ingestion
+- .hids/summary.txt - summary report generated after each run
+- .hids/baseline/ - saved baseline snapshots
 
 ## ELK compatibility
-The log file uses JSON lines rather than plain text so Elasticsearch or Logstash can parse fields like `timestamp`, `severity`, `module`, and `message` directly.
+The log file uses JSON lines rather than plain text so Elasticsearch or Logstash can parse fields like timestamp, severity, module, and message directly.
 
 Example line:
 
