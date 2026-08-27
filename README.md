@@ -75,6 +75,44 @@ Example line:
 {"timestamp":"2026-08-26 16:55:36 CEST","severity":"HIGH","module":"file_integrity","message":"Integrity change detected for /path/to/file"}
 ```
 
+## Connect to ELK (Elastic Security UI)
+This repository now includes a native Bash shipper script (`elk_ship.sh`) that sends new HIDS log entries to Elasticsearch using the Bulk API.
+
+1. Create an API key in Kibana:
+	- Stack Management -> API Keys -> Create API key
+	- Save the encoded key value (used as `ELASTIC_API_KEY`)
+
+2. Export environment variables on the Linux host where HIDS runs:
+
+```bash
+export ELASTIC_URL="https://<your-elastic-endpoint>:443"
+export ELASTIC_API_KEY="<base64-encoded-api-key>"
+export ELASTIC_INDEX="hids-alerts"
+```
+
+3. Make the shipper executable and send current/new events:
+
+```bash
+chmod +x ./elk_ship.sh
+./elk_ship.sh --once
+```
+
+4. Verify ingestion in Kibana:
+	- Discover -> select `hids-alerts*`
+	- Confirm fields like `timestamp`, `severity`, `module`, and `message`
+
+5. Optional cron shipping every minute:
+
+```bash
+* * * * * ELASTIC_URL="https://<your-elastic-endpoint>:443" ELASTIC_API_KEY="<base64-encoded-api-key>" ELASTIC_INDEX="hids-alerts" /bin/bash /path/to/HIDS_project/elk_ship.sh --once >/dev/null 2>&1
+```
+
+6. Optional Detection rule in Elastic Security:
+	- Security -> Rules -> Create new rule -> Custom query
+	- Index pattern: `hids-alerts*`
+	- Example KQL: `severity : "HIGH" or severity : "WARNING"`
+	- This will populate the Alerts screen once matching events are indexed.
+
 ## Security note
 This tool is intended for educational, testing, and local monitoring use. It does not replace a full enterprise security stack or endpoint detection solution.
 
