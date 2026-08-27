@@ -116,8 +116,8 @@ chmod +x ./elk_ship.sh
 ## ELK-provided snippet (reference)
 The exact snippet returned by ELK has been included in this repository at `elk_snippet_from_elk.sh`.
 
-- It uses `jq` and username/password authentication.
-- It is kept for reference and compatibility with Elastic examples.
+- It has been adapted to a native Bash + curl variant.
+- It uses API key authentication.
 - The project's default integration path remains `elk_ship.sh`, which uses Bash + curl + API key auth and offset tracking.
 
 ## Security note

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ###############################################################################
 # HIDS to Elasticsearch Ingestion Script
-# Sends HIDS security events to Elasticsearch with proper error handling
+# Sends HIDS security events to Elasticsearch with native Bash tools only
 ###############################################################################
 
 set -euo pipefail
@@ -29,64 +29,20 @@ error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
 }
 
-# Function to enrich event with ECS fields and proper structure
-enrich_event() {
+# Accept only non-empty JSON object lines to keep bulk ingestion robust.
+prepare_event() {
   local raw_event="$1"
-  local host_name
-  local host_ip
-
-  host_name="$(hostname)"
-  host_ip="$(hostname -I | awk '{print $1}')"
-
-  # Transform your HIDS event into ECS-compliant format
-  echo "$raw_event" | jq -c \
-    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
-    --arg hostname "$host_name" \
-    --arg hostip "$host_ip" \
-    '
-    {
-      "@timestamp": (if .timestamp then .timestamp else $timestamp end),
-      "event": {
-        "severity": (.severity // "medium"),
-        "module": (.module // "unknown"),
-        "category": ["host"],
-        "type": ["info"]
-      },
-      "message": .message,
-      "host": {
-        "name": $hostname,
-        "ip": $hostip
-      },
-      "file": (if .file_path then {
-        "path": .file_path,
-        "hash": (if .file_hash then {"sha256": .file_hash} else null end)
-      } else null end),
-      "process": (if .process_name then {
-        "name": .process_name,
-        "pid": (.process_pid // null),
-        "command_line": (.process_cmdline // null)
-      } else null end),
-      "network": (if .network_port then {
-        "transport": (.network_protocol // "tcp"),
-        "port": .network_port
-      } else null end),
-      "user": (if .user_name then {
-        "name": .user_name,
-        "id": (.user_id // null)
-      } else null end),
-      "hids": {
-        "baseline_hash": (.baseline_hash // null),
-        "scan_id": (.scan_id // null)
-      },
-      "tags": (.tags // ["hids"])
-    }
-    | walk(if type == "object" then with_entries(select(.value != null)) else . end)
-    '
+  if printf '%s' "$raw_event" | grep -Eq '^[[:space:]]*\{.*\}[[:space:]]*$'; then
+    printf '%s\n' "$raw_event"
+    return 0
+  fi
+  return 1
 }
 
 # Function to send bulk request
 send_bulk() {
   local bulk_data="$1"
+  local batch_count="$2"
   local index_name="${INDEX_PREFIX}-$(date +%Y.%m.%d)"
   local response
 
@@ -112,19 +68,12 @@ send_bulk() {
   body="$(echo "$response" | sed '$d')"
 
   if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 201 ]; then
-    local errors
-    errors="$(echo "$body" | jq -r '.errors')"
-
-    if [ "$errors" = "false" ]; then
-      local indexed
-      indexed="$(echo "$body" | jq -r '.items | length')"
-      log "Successfully indexed $indexed events to $index_name"
+    if printf '%s' "$body" | grep -Eq '"errors"[[:space:]]*:[[:space:]]*false'; then
+      log "Successfully indexed ${batch_count} events to $index_name"
       return 0
     else
-      local failed
-      failed="$(echo "$body" | jq -r '[.items[] | select(.index.error)] | length')"
-      error "Partial failure: $failed events failed to index"
-      echo "$body" | jq '.items[] | select(.index.error)' >> "$LOG_FILE"
+      error "Partial failure detected in Elasticsearch bulk response"
+      echo "$body" >> "$LOG_FILE"
       return 1
     fi
   else
@@ -153,19 +102,28 @@ main() {
   local bulk_payload=""
   local count=0
   local total=0
-  local enriched
+  local skipped=0
+  local prepared
+
+  if ! command -v curl >/dev/null 2>&1; then
+    error "curl is required but not found"
+    exit 1
+  fi
 
   while IFS= read -r line; do
     # Skip empty lines
     [ -z "$line" ] && continue
 
-    # Enrich the event
-    enriched="$(enrich_event "$line")"
+    if ! prepared="$(prepare_event "$line")"; then
+      skipped=$((skipped + 1))
+      error "Skipping non-JSON log line during ingestion"
+      continue
+    fi
 
     # Build bulk payload (index action + document)
     bulk_payload+='{"index":{}}'
     bulk_payload+=$'\n'
-    bulk_payload+="$enriched"
+    bulk_payload+="$prepared"
     bulk_payload+=$'\n'
 
     count=$((count + 1))
@@ -173,7 +131,7 @@ main() {
 
     # Send batch when reaching BATCH_SIZE
     if [ $count -ge $BATCH_SIZE ]; then
-      send_bulk "$bulk_payload"
+      send_bulk "$bulk_payload" "$count"
       bulk_payload=""
       count=0
     fi
@@ -181,10 +139,10 @@ main() {
 
   # Send remaining events
   if [ $count -gt 0 ]; then
-    send_bulk "$bulk_payload"
+    send_bulk "$bulk_payload" "$count"
   fi
 
-  log "Ingestion complete. Total events processed: $total"
+  log "Ingestion complete. Total events processed: $total, skipped: $skipped"
 }
 
 # Run main function
