@@ -1,0 +1,25 @@
+HIDS Summary
+Generated at: 2026-08-26 16:58:25 CEST
+Log file: /mnt/c/Users/musta/Desktop/HIDS_project/.hids/hids.log
+
+Recent alerts:
+udp   UNCONN 0      0           127.0.0.1:323       0.0.0.0:*                                     
+udp   UNCONN 0      0               [::1]:323          [::]:*                                     
+tcp   LISTEN 0      4096       127.0.0.54:53        0.0.0.0:*                                     
+tcp   LISTEN 0      5             0.0.0.0:8888      0.0.0.0:*    users:((\"python3\",pid=5834,fd=3))
+tcp   LISTEN 0      1000   10.255.255.254:53        0.0.0.0:*                                     
+tcp   LISTEN 0      4096    127.0.0.53%lo:53        0.0.0.0:*                                     "}
+{"timestamp":"2026-08-26 16:58:25 CEST","severity":"HIGH","module":"file_integrity","message":"Integrity change detected for /mnt/c/Users/musta/Desktop/HIDS_project/.hids/demo_target.txt"}
+{"timestamp":"2026-08-26 16:58:25 CEST","severity":"MEDIUM","module":"process_monitor","message":"Unexpected new processes detected: python3"}
+{"timestamp":"2026-08-26 16:58:25 CEST","severity":"HIGH","module":"network_monitor","message":"Unexpected network listener detected: Netid State  Recv-Q Send-Q  Local Address:Port Peer Address:PortProcess                           
+tcp   LISTEN 0      1000   10.255.255.254:53        0.0.0.0:*                                     
+tcp   LISTEN 0      4096       127.0.0.54:53        0.0.0.0:*                                     
+tcp   LISTEN 0      4096    127.0.0.53%lo:53        0.0.0.0:*                                     
+tcp   LISTEN 0      5             0.0.0.0:8888      0.0.0.0:*    users:((\"python3\",pid=5834,fd=3))
+udp   UNCONN 0      0               [::1]:323          [::]:*                                     
+udp   UNCONN 0      0           127.0.0.1:323       0.0.0.0:*                                     
+udp   UNCONN 0      0          127.0.0.54:53        0.0.0.0:*                                     
+udp   UNCONN 0      0       127.0.0.53%lo:53        0.0.0.0:*                                     
+udp   UNCONN 0      0      10.255.255.254:53        0.0.0.0:*                                     "}
+{"timestamp":"2026-08-26 16:58:25 CEST","severity":"INFO","module":"user_monitor","message":"No new user accounts detected"}
+{"timestamp":"2026-08-26 16:58:25 CEST","severity":"INFO","module":"privilege_monitor","message":"No new privileged binaries detected"}

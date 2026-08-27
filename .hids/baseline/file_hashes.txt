@@ -1,0 +1,4 @@
+/mnt/c/Users/musta/Desktop/HIDS_project/.hids/demo_target.txt	89cfe1da35cc073f01ebb4a0e5a961864550b0da30521a42f0c5ae19b311ca3e
+/etc/passwd	6aab5406cc6dc6c488a40a9a831bc97b80998e563148e66130683d0947daeeb5
+/etc/hosts	5667b9c4d8124b248d35e8fad693893dfc4583b34846735736a4c8563db2e090
+/etc/sudoers	
