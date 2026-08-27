@@ -37,9 +37,11 @@ From the project directory, run:
 ```bash
 ./HIDS.sh --baseline
 ./HIDS.sh --once
+./HIDS.sh --ship-elk
 ```
 
 This will create the initial baseline and run a full scan.
+The ship command runs a scan and sends newly generated events to Elasticsearch in one step.
 
 ## Demo mode
 To trigger a simulated malicious activity and generate a log alert, run:
@@ -95,6 +97,12 @@ export ELASTIC_INDEX="hids-alerts"
 ```bash
 chmod +x ./elk_ship.sh
 ./elk_ship.sh --once
+```
+
+Or use one command from the main script:
+
+```bash
+./HIDS.sh --ship-elk
 ```
 
 4. Verify ingestion in Kibana:

@@ -384,6 +384,7 @@ HIDS Bash Project
 Usage:
   ./HIDS.sh --baseline
   ./HIDS.sh --once
+  ./HIDS.sh --ship-elk
   ./HIDS.sh --demo
   ./HIDS.sh --install-cron
   ./HIDS.sh --help
@@ -391,10 +392,33 @@ Usage:
 Options:
   --baseline    Create the initial reference snapshot without scanning.
   --once        Run one complete inspection cycle and log any findings.
+  --ship-elk    Run one inspection cycle, then ship new events to Elasticsearch.
   --demo        Simulate an attack sequence that triggers log alerts.
   --install-cron  Add a recurring cron job for automatic monitoring.
   --help        Show this help menu.
 USAGE
+}
+
+# Runs one local scan and then ships new events to Elasticsearch using elk_ship.sh.
+ship_after_scan() {
+  local ship_script="${PROJECT_ROOT}/elk_ship.sh"
+
+  run_checks
+
+  if [ ! -f "${ship_script}" ]; then
+    log_event "WARNING" "elk_ship" "ELK shipper script not found at ${ship_script}"
+    echo "ELK shipper script not found at ${ship_script}"
+    return 1
+  fi
+
+  if ! bash "${ship_script}" --once; then
+    log_event "WARNING" "elk_ship" "ELK shipping failed; check ELASTIC_URL/ELASTIC_API_KEY and network access"
+    echo "ELK shipping failed. Verify ELASTIC_URL, ELASTIC_API_KEY, and connectivity."
+    return 1
+  fi
+
+  log_event "INFO" "elk_ship" "ELK shipping completed successfully"
+  echo "HIDS scan complete and new events shipped to Elasticsearch."
 }
 
 # Simulates a malicious workflow using only native shell actions.
@@ -433,6 +457,9 @@ main() {
     --once)
       run_checks
       echo "HIDS scan complete. Results saved in ${LOG_FILE}"
+      ;;
+    --ship-elk)
+      ship_after_scan
       ;;
     --demo)
       if [ ! -f "${BASELINE_DIR}/file_hashes.txt" ]; then
