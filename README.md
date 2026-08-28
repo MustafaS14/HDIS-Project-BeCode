@@ -54,8 +54,8 @@ To trigger a simulated malicious activity and generate a log alert, run:
 
 The demo writes to a monitored file to trigger an integrity alert using only native shell operations.
 
-## Automatic scheduling (Every 15 Minutes)
-To install a recurring scheduled check that runs every 15 minutes, run:
+## Automatic scheduling (Hourly)
+To install a recurring scheduled check that runs hourly, run:
 
 ```bash
 sudo ./HIDS.sh --install-cron
@@ -64,7 +64,7 @@ sudo ./HIDS.sh --install-cron
 On systems without root permissions, the script attempts to add a user crontab entry instead.
 
 ## Email Security Reports
-You can receive automated security reports delivered to your email inbox (e.g. every 15 minutes).
+You can receive automated security reports delivered to your email inbox hourly.
 
 1. Set your SMTP environment variables:
 ```bash
@@ -79,9 +79,9 @@ export SMTP_SERVER="smtp.gmail.com:587"
 ./HIDS.sh --email-report
 ```
 
-3. To include automated email reporting in your 15-minute cron job, edit your crontab (`crontab -e`):
+3. To include automated email reporting in your hourly cron job, edit your crontab (`crontab -e`):
 ```bash
-*/15 * * * * export EMAIL_TO="your.email@example.com" SMTP_USER="your.email@example.com" SMTP_PASS="your-app-password"; /bin/bash /path/to/HIDS_project/HIDS.sh --ship-elk >/dev/null 2>&1
+0 * * * * export EMAIL_TO="your.email@example.com" SMTP_USER="your.email@example.com" SMTP_PASS="your-app-password"; /bin/bash /path/to/HIDS_project/HIDS.sh --ship-elk >/dev/null 2>&1
 ```
 
 ## Output files

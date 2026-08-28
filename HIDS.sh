@@ -422,7 +422,7 @@ generate_summary() {
 install_scheduler() {
   ensure_state_dir
 
-  local cron_line="*/15 * * * * ${USER:-root} bash ${PROJECT_ROOT}/HIDS.sh --once >/dev/null 2>&1"
+  local cron_line="0 * * * * ${USER:-root} bash ${PROJECT_ROOT}/HIDS.sh --once >/dev/null 2>&1"
 
   if [ "$(id -u)" -eq 0 ]; then
     local cron_file="/etc/cron.d/hids-monitor"
@@ -471,7 +471,7 @@ Options:
   --ship-elk      Run one inspection cycle, then ship new events to Elasticsearch.
   --email-report  Run inspection cycle and send an email report if EMAIL_TO is set.
   --demo          Simulate an attack sequence that triggers log alerts.
-  --install-cron  Add a recurring cron job for automatic monitoring every 15 mins.
+  --install-cron  Add a recurring cron job for automatic monitoring hourly.
   --help          Show this help menu.
 USAGE
 }
