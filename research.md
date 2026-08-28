@@ -55,25 +55,9 @@ This format is easy to inspect manually and can later be parsed by another scrip
 To satisfy the live demo requirement, the project includes a simulated malicious sequence:
 
 - write to a monitored file in the project directory
-- run a full HIDS scan
 
-These actions trigger file-integrity alerts in the log and demonstrate the tool working without needing a real compromise.
 
-## Implementation notes
-- The script is intentionally bash-based and lightweight for educational use.
-- It stores state under the project directory so it is portable and easy to review.
-- The script is designed to be read by humans and can be expanded with more modules in the future.
-- All functions are documented with a comment block explaining their purpose.
-
-## Future improvements
-The project could be extended with several nice-to-have upgrades in later versions, including:
-
-- configurable thresholds via a config file
-- JSON-formatted alert output
-- colorized console output
-- email notifications for critical alerts
-- a baseline-aware whitelist system
-- a live monitoring dashboard with refreshes and alarm summaries
+This action trigger file-integrity alerts in the log and demonstrate the tool working without needing a real compromise.
 
 ---
 
@@ -91,7 +75,7 @@ Professional HIDS tools like Wazuh, OSSEC, Auditd, and Tripwire don't attempt to
 
 The amount of known processes along with their usage patterns reveals system health. Linux exposes this information through both commands and files in /proc/:
 
-- `top`, `htop` – process activity and resource consumption
+- `top` – process activity and resource consumption
 - `free` – memory usage (RAM)
 - `smartmontools` – hard drive component status
 - `sysstat` (iostat) – hard drive input/output metrics
