@@ -96,13 +96,68 @@ LOW_COUNT=${LOW_COUNT:-0}
 
 TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
-# Threshold Check for Instantaneous Alert Mode
-# Instant report triggers ONLY if HIGH >= 1 OR MEDIUM >= 5
+# Extract formatted messages for each severity level
+HIGH_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"HIGH"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
+MEDIUM_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"MEDIUM"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
+LOW_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"LOW"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
+
+# Calculate fingerprint hash of high and medium alert contents
+ALERT_CONTENT_STR="${HIGH_ALERTS}"$'\n'"${MEDIUM_ALERTS}"
+if command -v sha256sum >/dev/null 2>&1; then
+  CURRENT_CONTENT_HASH="$(printf '%s' "${ALERT_CONTENT_STR}" | sha256sum | awk '{print $1}')"
+elif command -v md5sum >/dev/null 2>&1; then
+  CURRENT_CONTENT_HASH="$(printf '%s' "${ALERT_CONTENT_STR}" | md5sum | awk '{print $1}')"
+else
+  CURRENT_CONTENT_HASH="$(printf '%s' "${ALERT_CONTENT_STR}" | cksum | awk '{print $1}')"
+fi
+
+STATE_FILE="${STATE_DIR}/last_instant_alert.state"
+
+# Threshold & Deduplication Check for Instantaneous Alert Mode
 if [ "${REPORT_MODE}" = "instant" ]; then
   if [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
     echo "Instant alert threshold not met (Requires HIGH >= 1 or MEDIUM >= 5; Current HIGH: ${HIGH_COUNT}, MEDIUM: ${MEDIUM_COUNT}). Skipping instant email."
+    rm -f "${STATE_FILE}" 2>/dev/null || true
     exit 0
   fi
+
+  # Deduplication check: compare with previously emailed instant alert state
+  SHOULD_SEND=0
+  if [ -f "${STATE_FILE}" ]; then
+    PREV_HIGH=$(awk 'NR==1 {print $1}' "${STATE_FILE}" 2>/dev/null || echo 0)
+    PREV_MEDIUM=$(awk 'NR==1 {print $2}' "${STATE_FILE}" 2>/dev/null || echo 0)
+    PREV_HASH=$(awk 'NR==2 {print $1}' "${STATE_FILE}" 2>/dev/null || echo "")
+
+    PREV_HIGH=$(echo "${PREV_HIGH}" | tr -d '[:space:]')
+    PREV_MEDIUM=$(echo "${PREV_MEDIUM}" | tr -d '[:space:]')
+    PREV_HIGH=${PREV_HIGH:-0}
+    PREV_MEDIUM=${PREV_MEDIUM:-0}
+
+    # Trigger new email ONLY if:
+    # 1. Number of HIGH severity alerts increased
+    # 2. Number of MEDIUM severity alerts increased
+    # 3. Content of the alerts changed
+    if [ "${HIGH_COUNT}" -gt "${PREV_HIGH}" ]; then
+      SHOULD_SEND=1
+    elif [ "${MEDIUM_COUNT}" -gt "${PREV_MEDIUM}" ]; then
+      SHOULD_SEND=1
+    elif [ "${CURRENT_CONTENT_HASH}" != "${PREV_HASH}" ]; then
+      SHOULD_SEND=1
+    fi
+  else
+    # First time seeing an instant alert condition -> Send email
+    SHOULD_SEND=1
+  fi
+
+  if [ "${SHOULD_SEND}" -eq 0 ]; then
+    echo "Duplicate alert state (HIGH: ${HIGH_COUNT}, MEDIUM: ${MEDIUM_COUNT}). Severity did not increase and alert content is unchanged. Skipping duplicate instant email."
+    exit 0
+  fi
+
+  # Save state after sending
+  mkdir -p "${STATE_DIR}"
+  printf '%s %s\n%s\n' "${HIGH_COUNT}" "${MEDIUM_COUNT}" "${CURRENT_CONTENT_HASH}" > "${STATE_FILE}"
+
   STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   SUBJECT="🚨 [INSTANT SECURITY ALERT] ${HOSTNAME_STR} - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT}"
 else
@@ -114,11 +169,6 @@ else
   STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   SUBJECT="[HIDS Hourly Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 fi
-
-# Extract formatted messages for each severity level
-HIGH_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"HIGH"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
-MEDIUM_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"MEDIUM"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
-LOW_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"LOW"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
 
 # Build email payload file
 PAYLOAD_FILE="$(mktemp)"

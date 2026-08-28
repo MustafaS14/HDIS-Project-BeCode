@@ -66,12 +66,13 @@ On systems without root permissions, the script attempts to add a user crontab e
 ## Email Security Reports & Instant Threat Alerts
 The system provides dual-mode email alerting delivered directly to your inbox:
 
-1. **Instantaneous Threat Alerts**:
-   - Automatically sent **immediately** whenever a scan detects **1 or more HIGH severity alerts** OR **5 or more MEDIUM severity alerts**.
+1. **Instantaneous Threat Alerts (Stateful & Deduplicated)**:
+   - Sent **immediately** upon detection if **HIGH $\ge$ 1** OR **MEDIUM $\ge$ 5**.
+   - **Deduplication Logic**: Once an instant alert is sent for an active incident, duplicate emails are suppressed. A new instant email alert is triggered **only if the number of severity alerts increases** OR **if the specific content of the alerts changes**.
    - Subject format: `🚨 [INSTANT SECURITY ALERT] host - HIGH: X | MEDIUM: Y`
 
 2. **Routine Hourly Summary Reports**:
-   - Sent every hour on schedule, even when only **LOW** severity routine checks exist.
+   - Sent every hour on schedule via cron, summarizing total events even when only **LOW** severity routine checks exist.
    - Subject format: `[HIDS Hourly Report] host - HIGH: X | MEDIUM: Y | LOW: Z`
 
 ### Email Setup & Testing:
