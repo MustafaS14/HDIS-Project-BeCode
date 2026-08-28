@@ -323,6 +323,78 @@ check_privilege_activity() {
   fi
 }
 
+# Detects traffic or listening sockets using non-standard or high-risk ports that normally carry no data.
+check_unusual_ports() {
+  ensure_state_dir
+
+  local suspicious_ports="4444|6667|31337|4443|8888|1337|6666|6668|6669|12345|9999"
+  local unusual_traffic=""
+
+  if command -v ss >/dev/null 2>&1; then
+    unusual_traffic="$(ss -tulnp 2>/dev/null | grep -E ":(${suspicious_ports})[[:space:]]" || true)"
+    if [ -z "${unusual_traffic}" ]; then
+      unusual_traffic="$(ss -tun 2>/dev/null | grep -E ":(${suspicious_ports})[[:space:]]" || true)"
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    unusual_traffic="$(netstat -tuln 2>/dev/null | grep -E ":(${suspicious_ports})[[:space:]]" || true)"
+  fi
+
+  if [ -n "${unusual_traffic}" ]; then
+    log_event "HIGH" "unusual_ports" "Unusual port activity detected on non-standard port: ${unusual_traffic}"
+  fi
+}
+
+# Detects regular periodic signals sent from an internal device to an external command-and-control server (Beaconing).
+check_beaconing() {
+  ensure_state_dir
+  local beacon_store="${STATE_DIR}/beacon_history.txt"
+
+  local current_conns=""
+  if command -v ss >/dev/null 2>&1; then
+    current_conns="$(ss -tun 2>/dev/null | grep 'ESTAB' | awk '{print $5}' | grep -v '^127\.' | grep -v '^::1' | grep -v '^0\.0\.0\.0' | sort -u || true)"
+  elif command -v netstat >/dev/null 2>&1; then
+    current_conns="$(netstat -tun 2>/dev/null | grep 'ESTABLISHED' | awk '{print $5}' | grep -v '^127\.' | grep -v '^::1' | grep -v '^0\.0\.0\.0' | sort -u || true)"
+  fi
+
+  if [ -n "${current_conns}" ]; then
+    echo "${current_conns}" >> "${beacon_store}"
+    local trimmed
+    trimmed="$(tail -n 50 "${beacon_store}" 2>/dev/null || true)"
+    echo "${trimmed}" > "${beacon_store}"
+
+    local repeated_endpoints
+    repeated_endpoints="$(sort "${beacon_store}" | uniq -c | awk '$1 >= 3 {print $2}' | tr '\n' ' ')"
+    if [ -n "${repeated_endpoints}" ]; then
+      log_event "HIGH" "beaconing" "Command & Control beaconing pattern detected: repeated periodic signals to ${repeated_endpoints}"
+    fi
+  fi
+}
+
+# Detects brute force signs: sudden spikes in failed login attempts followed by a successful login.
+check_brute_force() {
+  ensure_state_dir
+
+  local failed_count=0
+  if command -v lastb >/dev/null 2>&1; then
+    failed_count="$(lastb -n 20 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' | wc -l | tr -d ' ')"
+  fi
+
+  local active_login=""
+  if command -v who >/dev/null 2>&1; then
+    active_login="$(who 2>/dev/null | head -n 1 || true)"
+  fi
+  local recent_login=""
+  if command -v last >/dev/null 2>&1; then
+    recent_login="$(last -n 5 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v 'reboot' | head -n 1 || true)"
+  fi
+
+  if [ "${failed_count}" -ge 3 ] && { [ -n "${active_login}" ] || [ -n "${recent_login}" ]; }; then
+    local user_name
+    user_name="$(echo "${active_login:-${recent_login}}" | awk '{print $1}')"
+    log_event "HIGH" "brute_force" "Brute force attack pattern detected: spike of ${failed_count} failed login attempts followed by successful login for user '${user_name:-unknown}'"
+  fi
+}
+
 # Module 5: centralizes alert severity and persistence so real issues are surfaced in a readable log.
 generate_summary() {
   ensure_state_dir
@@ -450,16 +522,19 @@ run_demo() {
   run_checks
 }
 
-# Runs the full check set in sequence: file integrity, process, network, user, and privilege monitoring.
+# Runs the full check set in sequence: file integrity, process, network, user, privilege, unusual ports, beaconing, and brute force monitoring.
 run_checks() {
   ensure_state_dir
 
   module_system_health
   module_user_activity
+  check_brute_force
   module_process_network
   check_file_integrity
   check_process_activity
   check_network_activity
+  check_unusual_ports
+  check_beaconing
   check_user_activity
   check_privilege_activity
   generate_summary

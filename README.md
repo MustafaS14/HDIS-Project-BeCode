@@ -5,13 +5,15 @@ This project is a lightweight host-based intrusion detection system (HIDS) writt
 It is intentionally built with native Linux command-line tools and Bash only (no third-party software dependencies).
 
 ## What it checks
-The tool covers five monitoring modules:
+The tool covers comprehensive monitoring modules:
 
-- File integrity monitoring
-- Process activity monitoring
-- Network listener monitoring
-- User account monitoring
-- Privileged binary monitoring
+- **File integrity monitoring** (HIGH severity on tampering or deletion)
+- **Process activity monitoring** (MEDIUM/HIGH severity on suspicious processes)
+- **Network listener & unusual port monitoring** (HIGH severity on non-standard ports)
+- **C2 Beaconing detection** (HIGH severity on repeated periodic outbound signals)
+- **Brute force detection** (HIGH severity on failed login spikes followed by successful login)
+- **User account monitoring** (MEDIUM severity on new/modified accounts)
+- **Privileged binary monitoring** (HIGH severity on new SUID/SGID binaries)
 
 ## Main features
 - Creates a baseline snapshot of important system state
