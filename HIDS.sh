@@ -388,18 +388,29 @@ Usage:
   ./HIDS.sh --baseline
   ./HIDS.sh --once
   ./HIDS.sh --ship-elk
+  ./HIDS.sh --email-report
   ./HIDS.sh --demo
   ./HIDS.sh --install-cron
   ./HIDS.sh --help
 
 Options:
-  --baseline    Create the initial reference snapshot without scanning.
-  --once        Run one complete inspection cycle and log any findings.
-  --ship-elk    Run one inspection cycle, then ship new events to Elasticsearch.
-  --demo        Simulate an attack sequence that triggers log alerts.
-  --install-cron  Add a recurring cron job for automatic monitoring.
-  --help        Show this help menu.
+  --baseline      Create the initial reference snapshot without scanning.
+  --once          Run one complete inspection cycle and log any findings.
+  --ship-elk      Run one inspection cycle, then ship new events to Elasticsearch.
+  --email-report  Run inspection cycle and send an email report if EMAIL_TO is set.
+  --demo          Simulate an attack sequence that triggers log alerts.
+  --install-cron  Add a recurring cron job for automatic monitoring every 15 mins.
+  --help          Show this help menu.
 USAGE
+}
+
+# Sends an email security report if send_email_report.sh is available.
+send_email_after_scan() {
+  local email_script="${PROJECT_ROOT}/send_email_report.sh"
+
+  if [ -f "${email_script}" ]; then
+    bash "${email_script}" 30
+  fi
 }
 
 # Runs one local scan and then ships new events to Elasticsearch using elk_ship.sh.
@@ -422,6 +433,10 @@ ship_after_scan() {
 
   log_event "LOW" "elk_ship" "ELK shipping completed successfully"
   echo "HIDS scan complete and new events shipped to Elasticsearch."
+
+  if [ -n "${EMAIL_TO:-}" ]; then
+    send_email_after_scan
+  fi
 }
 
 # Simulates a malicious workflow using only native shell actions.
@@ -460,9 +475,16 @@ main() {
     --once)
       run_checks
       echo "HIDS scan complete. Results saved in ${LOG_FILE}"
+      if [ -n "${EMAIL_TO:-}" ]; then
+        send_email_after_scan
+      fi
       ;;
     --ship-elk)
       ship_after_scan
+      ;;
+    --email-report)
+      run_checks
+      send_email_after_scan
       ;;
     --demo)
       if [ ! -f "${BASELINE_DIR}/file_hashes.txt" ]; then
