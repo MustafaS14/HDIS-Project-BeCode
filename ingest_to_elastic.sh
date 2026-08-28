@@ -8,8 +8,8 @@ set -euo pipefail
 
 # ========== CONFIGURATION ==========
 # Update these with your Elasticsearch details
-ES_URL="https://your-elasticsearch-endpoint:9200"
-ES_API_KEY="your_api_key_here"  # Recommended: Use API key instead of user/pass
+ES_URL="https://my-elasticsearch-project-d17947.es.europe-west1.gcp.elastic.cloud:443"
+ES_API_KEY="RDRQV1I2QUJzVDlOMmpMU3NIbkE6dkZKaEd2TmRSSjkwVUdhaUtJVkxlQQ=="  # Recommended: Use API key instead of user/pass
 
 # OR use username/password (less secure):
 # ES_USER="your-username"
@@ -18,7 +18,12 @@ ES_API_KEY="your_api_key_here"  # Recommended: Use API key instead of user/pass
 # Index configuration
 INDEX_PREFIX="hids-events"
 BATCH_SIZE=500  # Number of events per bulk request
-LOG_FILE="/var/log/hids-ingest.log"
+LOG_FILE="${LOG_FILE:-/var/log/hids-ingest.log}"
+
+# Fallback log location if default location is not writable
+if ! touch "$LOG_FILE" 2>/dev/null; then
+  LOG_FILE=".hids/hids-ingest.log"
+fi
 
 # ========== FUNCTIONS ==========
 log() {

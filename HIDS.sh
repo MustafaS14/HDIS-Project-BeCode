@@ -38,7 +38,7 @@ ensure_state_dir() {
 
 # Records a timestamped alert in the persistent log file with severity and module metadata.
 log_event() {
-  local severity="${1:-INFO}"
+  local severity="${1:-LOW}"
   local module="${2:-general}"
   local message="${3:-No message provided}"
   local stamp
@@ -46,6 +46,9 @@ log_event() {
   local json_message
   json_message="${message//\\/\\\\}"
   json_message="${json_message//\"/\\\"}"
+  json_message="${json_message//$'\n'/\\n}"
+  json_message="${json_message//$'\r'/}"
+  json_message="${json_message//$'\t'/\\t}"
   printf '{"timestamp":"%s","severity":"%s","module":"%s","message":"%s"}\n' "${stamp}" "${severity}" "${module}" "${json_message}" >> "${LOG_FILE}"
 }
 
@@ -101,7 +104,7 @@ module_system_health() {
   if [ "${cpu_usage}" -ge "${HEALTH_CPU_THRESHOLD}" ] || [ "${mem_used}" -ge "${HEALTH_MEMORY_THRESHOLD}" ] || [ "${disk_usage:-0}" -ge "${HEALTH_DISK_THRESHOLD}" ]; then
     log_event "WARNING" "system_health" "CPU=${cpu_usage}% MEM=${mem_used}% DISK=${disk_usage:-0}% LOAD=${load_avg:-unknown}; resource usage above healthy threshold"
   else
-    log_event "INFO" "system_health" "CPU=${cpu_usage}% MEM=${mem_used}% DISK=${disk_usage:-0}% LOAD=${load_avg:-unknown}; system appears healthy"
+    log_event "LOW" "system_health" "CPU=${cpu_usage}% MEM=${mem_used}% DISK=${disk_usage:-0}% LOAD=${load_avg:-unknown}; system appears healthy"
   fi
 }
 
@@ -115,9 +118,9 @@ module_user_activity() {
   failed_logins="$(lastb -n 10 2>/dev/null || true)"
 
   if [ -n "${current_users}" ]; then
-    log_event "INFO" "user_activity" "Current active sessions: ${current_users}"
+    log_event "LOW" "user_activity" "Current active sessions: ${current_users}"
   else
-    log_event "INFO" "user_activity" "No users are currently logged in"
+    log_event "LOW" "user_activity" "No users are currently logged in"
   fi
 
   if [ -n "${failed_logins}" ]; then
@@ -125,9 +128,9 @@ module_user_activity() {
   fi
 
   if [ -n "${recent_logins}" ]; then
-    log_event "INFO" "user_activity" "Recent login activity: ${recent_logins}"
+    log_event "LOW" "user_activity" "Recent login activity: ${recent_logins}"
   else
-    log_event "INFO" "user_activity" "No recent login history available"
+    log_event "LOW" "user_activity" "No recent login history available"
   fi
 }
 
@@ -150,7 +153,7 @@ module_process_network() {
   if [ -n "${suspicious_processes}" ]; then
     log_event "MEDIUM" "process_network" "Suspicious running processes detected: ${suspicious_processes}"
   else
-    log_event "INFO" "process_network" "No obviously suspicious processes detected"
+    log_event "LOW" "process_network" "No obviously suspicious processes detected"
   fi
 
   local network_summary
@@ -163,9 +166,9 @@ module_process_network() {
   fi
 
   if [ -n "${network_summary}" ]; then
-    log_event "INFO" "process_network" "Current listeners: ${network_summary}"
+    log_event "LOW" "process_network" "Current listeners: ${network_summary}"
   else
-    log_event "INFO" "process_network" "No network listeners identified by ss/netstat"
+    log_event "LOW" "process_network" "No network listeners identified by ss/netstat"
   fi
 }
 
@@ -200,7 +203,7 @@ write_baselines() {
     : > "${BASELINE_DIR}/privileged.txt"
   fi
 
-  log_event "INFO" "baseline" "Baseline snapshot created at ${BASELINE_DIR}"
+  log_event "LOW" "baseline" "Baseline snapshot created at ${BASELINE_DIR}"
 }
 
 # Module 4: compares monitored files against a known-good snapshot and flags file changes or deletions.
@@ -228,7 +231,7 @@ check_file_integrity() {
   done < "${BASELINE_DIR}/file_hashes.txt"
 
   if [ "${changed}" -eq 0 ]; then
-    log_event "INFO" "file_integrity" "No file integrity issues detected"
+    log_event "LOW" "file_integrity" "No file integrity issues detected"
   fi
 }
 
@@ -247,7 +250,7 @@ check_process_activity() {
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "process_monitor" "Unexpected new processes detected: ${delta}"
   else
-    log_event "INFO" "process_monitor" "No unexpected process activity detected"
+    log_event "LOW" "process_monitor" "No unexpected process activity detected"
   fi
 }
 
@@ -273,7 +276,7 @@ check_network_activity() {
   if [ -n "${delta}" ]; then
     log_event "HIGH" "network_monitor" "Unexpected network listener detected: ${delta}"
   else
-    log_event "INFO" "network_monitor" "No unexpected network listeners detected"
+    log_event "LOW" "network_monitor" "No unexpected network listeners detected"
   fi
 }
 
@@ -292,7 +295,7 @@ check_user_activity() {
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "user_monitor" "New user or account change detected: ${delta}"
   else
-    log_event "INFO" "user_monitor" "No new user accounts detected"
+    log_event "LOW" "user_monitor" "No new user accounts detected"
   fi
 }
 
@@ -316,7 +319,7 @@ check_privilege_activity() {
   if [ -n "${delta}" ]; then
     log_event "HIGH" "privilege_monitor" "New privileged binary detected: ${delta}"
   else
-    log_event "INFO" "privilege_monitor" "No new privileged binaries detected"
+    log_event "LOW" "privilege_monitor" "No new privileged binaries detected"
   fi
 }
 
@@ -340,7 +343,7 @@ generate_summary() {
     fi
   } > "${summary_file}"
 
-  log_event "INFO" "summary" "Summary report generated at ${summary_file}"
+  log_event "LOW" "summary" "Summary report generated at ${summary_file}"
 }
 
 # Installs a cron entry so the HIDS runs automatically at a fixed interval without manual intervention.
@@ -355,7 +358,7 @@ install_scheduler() {
     printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "${cron_file}"
     printf '%s\n' "${cron_line//${USER:-root}/root}" >> "${cron_file}"
     chmod 0644 "${cron_file}"
-    log_event "INFO" "scheduler" "Cron job installed at ${cron_file}"
+    log_event "LOW" "scheduler" "Cron job installed at ${cron_file}"
     echo "Scheduler installed at ${cron_file}"
   else
     if command -v crontab >/dev/null 2>&1; then
@@ -367,7 +370,7 @@ install_scheduler() {
         crontab "${user_cron}"
       fi
       rm -f "${user_cron}"
-      log_event "INFO" "scheduler" "User cron entry installed for ${USER}"
+      log_event "LOW" "scheduler" "User cron entry installed for ${USER}"
       echo "Scheduler installed via user crontab"
     else
       log_event "WARNING" "scheduler" "cron is not available; automatic scheduling could not be configured"
@@ -417,7 +420,7 @@ ship_after_scan() {
     return 1
   fi
 
-  log_event "INFO" "elk_ship" "ELK shipping completed successfully"
+  log_event "LOW" "elk_ship" "ELK shipping completed successfully"
   echo "HIDS scan complete and new events shipped to Elasticsearch."
 }
 
