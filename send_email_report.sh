@@ -13,7 +13,7 @@ LOG_FILE="${LOG_FILE:-${STATE_DIR}/hids.log}"
 HOSTNAME_STR="$(hostname 2>/dev/null || echo "host")"
 
 # Email Configuration (Environment Variables or defaults)
-EMAIL_TO="${EMAIL_TO:-}"
+EMAIL_TO="${EMAIL_TO:-mustafasyed82@gmail.com}"
 SMTP_SERVER="${SMTP_SERVER:-smtp.gmail.com:587}"
 SMTP_USER="${SMTP_USER:-}"
 SMTP_PASS="${SMTP_PASS:-}"
