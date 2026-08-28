@@ -247,38 +247,40 @@ fi
 # Build professional HTML email payload file
 PAYLOAD_FILE="$(mktemp)"
 
-python3 - "$LOG_FILE" "$HOSTNAME_STR" "$STAMP" "$LINES_COUNT" "$REPORT_MODE" "${SMTP_USER:-hids@${HOSTNAME_STR}}" "${EMAIL_TO:-mustafasyed82@gmail.com}" "$SUBJECT" "$HIGH_COUNT" "$MEDIUM_COUNT" "$LOW_COUNT" "$TOTAL_COUNT" "$PAYLOAD_FILE" <<'PYEOF'
-import json, html, sys
+python3 - "$LOG_FILE" "$HOSTNAME_STR" "$STAMP" "$LINES_COUNT" "$REPORT_MODE" "${SMTP_USER:-hids@${HOSTNAME_STR}}" "${EMAIL_TO:-mustafasyed82@gmail.com}" "$SUBJECT" "$PAYLOAD_FILE" <<'PYEOF'
+import json, html, sys, os
 
 log_file = sys.argv[1]
 hostname = sys.argv[2]
 stamp = sys.argv[3]
-lines_count = sys.argv[4]
+lines_count = int(sys.argv[4])
 report_mode = sys.argv[5]
 smtp_user = sys.argv[6]
 email_to = sys.argv[7]
 subject = sys.argv[8]
-high_count = int(sys.argv[9])
-medium_count = int(sys.argv[10])
-low_count = int(sys.argv[11])
-total_count = int(sys.argv[12])
-payload_path = sys.argv[13]
-
-raw_lines = sys.stdin.read().strip().splitlines()
+payload_path = sys.argv[9]
 
 events = []
-for line in raw_lines:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        events.append(json.loads(line))
-    except Exception:
-        pass
+if os.path.exists(log_file):
+    with open(log_file, "r", encoding="utf-8") as f:
+        raw_lines = f.readlines()[-lines_count:]
+    for line in raw_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except Exception:
+            pass
 
 high_events = [e for e in events if e.get("severity") == "HIGH"]
 medium_events = [e for e in events if e.get("severity") == "MEDIUM"]
-low_events = [e for e in events if e.get("severity") == "LOW"][:10]  # Show top 10 low events
+low_events = [e for e in events if e.get("severity") == "LOW"]
+
+high_count = len(high_events)
+medium_count = len(medium_events)
+low_count = len(low_events)
+total_count = len(events)
 
 def build_rows(event_list, border_color="#e2e8f0"):
     if not event_list:
@@ -300,7 +302,7 @@ def build_rows(event_list, border_color="#e2e8f0"):
 
 high_rows = build_rows(high_events, "#fee2e2")
 medium_rows = build_rows(medium_events, "#fef3c7")
-low_rows = build_rows(low_events, "#e2e8f0")
+low_rows = build_rows(low_events[:10], "#e2e8f0")
 
 if high_count > 0:
     banner_bg = "#fef2f2"
@@ -443,7 +445,6 @@ Content-Type: text/html; charset=UTF-8
 with open(payload_path, "w", encoding="utf-8") as f:
     f.write(html_body)
 PYEOF
-<<< "$RECENT_EVENTS"
 
 # If EMAIL_TO is not set, output report preview to stdout
 if [ -z "${EMAIL_TO}" ]; then
