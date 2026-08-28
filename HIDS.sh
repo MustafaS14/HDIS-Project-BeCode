@@ -479,9 +479,10 @@ USAGE
 # Sends an email security report if send_email_report.sh is available.
 send_email_after_scan() {
   local email_script="${PROJECT_ROOT}/send_email_report.sh"
+  local mode="${1:---hourly}"
 
   if [ -f "${email_script}" ]; then
-    bash "${email_script}" 30
+    bash "${email_script}" "${mode}" 30
   fi
 }
 
@@ -507,7 +508,7 @@ ship_after_scan() {
   echo "HIDS scan complete and new events shipped to Elasticsearch."
 
   if [ -n "${EMAIL_TO:-}" ]; then
-    send_email_after_scan
+    send_email_after_scan --hourly
   fi
 }
 
@@ -538,6 +539,11 @@ run_checks() {
   check_user_activity
   check_privilege_activity
   generate_summary
+
+  # Automatically trigger instant email report if threshold met (HIGH >= 1 or MEDIUM >= 5)
+  if [ -n "${EMAIL_TO:-}" ]; then
+    send_email_after_scan --instant
+  fi
 }
 
 # Handles the command-line interface and dispatches the right action.

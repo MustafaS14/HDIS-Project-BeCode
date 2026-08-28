@@ -63,14 +63,24 @@ sudo ./HIDS.sh --install-cron
 
 On systems without root permissions, the script attempts to add a user crontab entry instead.
 
-## Email Security Reports
-You can receive automated security reports delivered to your email inbox hourly.
+## Email Security Reports & Instant Threat Alerts
+The system provides dual-mode email alerting delivered directly to your inbox:
+
+1. **Instantaneous Threat Alerts**:
+   - Automatically sent **immediately** whenever a scan detects **1 or more HIGH severity alerts** OR **5 or more MEDIUM severity alerts**.
+   - Subject format: `🚨 [INSTANT SECURITY ALERT] host - HIGH: X | MEDIUM: Y`
+
+2. **Routine Hourly Summary Reports**:
+   - Sent every hour on schedule, even when only **LOW** severity routine checks exist.
+   - Subject format: `[HIDS Hourly Report] host - HIGH: X | MEDIUM: Y | LOW: Z`
+
+### Email Setup & Testing:
 
 1. Set your SMTP environment variables:
 ```bash
-export EMAIL_TO="your.email@example.com"
-export SMTP_USER="your.email@example.com"
-export SMTP_PASS="your-app-password"  # e.g., Gmail App Password
+export EMAIL_TO="mustafasyed82@gmail.com"
+export SMTP_USER="mustafasyed82@gmail.com"
+export SMTP_PASS="your-app-password"  # Gmail App Password
 export SMTP_SERVER="smtp.gmail.com:587"
 ```
 
@@ -79,9 +89,9 @@ export SMTP_SERVER="smtp.gmail.com:587"
 ./HIDS.sh --email-report
 ```
 
-3. To include automated email reporting in your hourly cron job, edit your crontab (`crontab -e`):
+3. Automated Hourly Cron Job (`crontab -e`):
 ```bash
-0 * * * * export EMAIL_TO="your.email@example.com" SMTP_USER="your.email@example.com" SMTP_PASS="your-app-password"; /bin/bash /path/to/HIDS_project/HIDS.sh --ship-elk >/dev/null 2>&1
+0 * * * * export EMAIL_TO="mustafasyed82@gmail.com" SMTP_USER="mustafasyed82@gmail.com" SMTP_PASS="your-app-password"; /bin/bash /path/to/HIDS_project/HIDS.sh --ship-elk >/dev/null 2>&1
 ```
 
 ## Output files

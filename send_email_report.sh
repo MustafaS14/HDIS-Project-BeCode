@@ -50,8 +50,23 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-# Determine how many lines to inspect (default: last 30 log entries)
-LINES_COUNT="${1:-30}"
+# Determine mode and how many lines to inspect (default: --hourly 30)
+REPORT_MODE="hourly"
+LINES_COUNT=30
+
+for arg in "$@"; do
+  case "$arg" in
+    --instant)
+      REPORT_MODE="instant"
+      ;;
+    --hourly)
+      REPORT_MODE="hourly"
+      ;;
+    [0-9]*)
+      LINES_COUNT="$arg"
+      ;;
+  esac
+done
 
 if [ ! -f "${LOG_FILE}" ]; then
   echo "Log file not found at ${LOG_FILE}" >&2
@@ -66,20 +81,39 @@ if [ -z "${RECENT_EVENTS}" ]; then
   exit 0
 fi
 
-# Count alert severities
-HIGH_COUNT=$(echo "${RECENT_EVENTS}" | grep -c '"severity":"HIGH"' || echo 0)
-MEDIUM_COUNT=$(echo "${RECENT_EVENTS}" | grep -c '"severity":"MEDIUM"' || echo 0)
-LOW_COUNT=$(echo "${RECENT_EVENTS}" | grep -c '"severity":"LOW"' || echo 0)
+# Count alert severities (safely parse integer counts under pipefail)
+HIGH_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"HIGH"' 2>/dev/null || true)
+MEDIUM_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"MEDIUM"' 2>/dev/null || true)
+LOW_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"LOW"' 2>/dev/null || true)
+
+HIGH_COUNT=$(echo "${HIGH_COUNT}" | tr -d '[:space:]')
+MEDIUM_COUNT=$(echo "${MEDIUM_COUNT}" | tr -d '[:space:]')
+LOW_COUNT=$(echo "${LOW_COUNT}" | tr -d '[:space:]')
+
+HIGH_COUNT=${HIGH_COUNT:-0}
+MEDIUM_COUNT=${MEDIUM_COUNT:-0}
+LOW_COUNT=${LOW_COUNT:-0}
+
 TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
-# Skip if EMAIL_ONLY_ON_ALERTS is true and no HIGH/MEDIUM alerts exist
-if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
-  echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
-  exit 0
+# Threshold Check for Instantaneous Alert Mode
+# Instant report triggers ONLY if HIGH >= 1 OR MEDIUM >= 5
+if [ "${REPORT_MODE}" = "instant" ]; then
+  if [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
+    echo "Instant alert threshold not met (Requires HIGH >= 1 or MEDIUM >= 5; Current HIGH: ${HIGH_COUNT}, MEDIUM: ${MEDIUM_COUNT}). Skipping instant email."
+    exit 0
+  fi
+  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  SUBJECT="🚨 [INSTANT SECURITY ALERT] ${HOSTNAME_STR} - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT}"
+else
+  # Hourly Report Mode (sends regular report including when only LOW severities exist)
+  if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
+    echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
+    exit 0
+  fi
+  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  SUBJECT="[HIDS Hourly Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 fi
-
-STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-SUBJECT="[HIDS Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 
 # Extract formatted messages for each severity level
 HIGH_ALERTS=$(echo "${RECENT_EVENTS}" | grep '"severity":"HIGH"' | awk -F'"message":"' '{print $2}' | sed 's/"}$//' | sed 's/\\n/\n    /g' || true)
