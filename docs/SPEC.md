@@ -1,7 +1,7 @@
 # HIDS — Build Specification
 
-> Place this file at the repository root as `SPEC.md`.
-> In Copilot Chat, prefix every request with `#file:SPEC.md` so the contract is
+> This file lives at `docs/SPEC.md`.
+> In Copilot Chat, prefix every request with `#file:docs/SPEC.md` so the contract is
 > always in context. Work one task at a time, in order. Do not skip ahead.
 
 ---
@@ -484,14 +484,14 @@ choose, because it is what makes the demo distinctive.
 
 Work file by file. A prompt that works:
 
-> `#file:SPEC.md` Implement Task 4, `lib/alert.sh`, exactly as specified.
+> `#file:docs/SPEC.md` Implement Task 4, `lib/alert.sh`, exactly as specified.
 > Use the function names and signatures given. Every function needs a one-line
 > comment above it. Bash only, `set -uo pipefail`, no `set -e`. Do not implement
 > any other task.
 
 Then, before moving on:
 
-> `#file:SPEC.md` `#file:lib/alert.sh` Review this against Task 4. List any
+> `#file:docs/SPEC.md` `#file:lib/alert.sh` Review this against Task 4. List any
 > requirement in the spec that the code does not meet. Do not rewrite it yet.
 
 That second prompt catches most drift. Copilot degrades when asked for more than
