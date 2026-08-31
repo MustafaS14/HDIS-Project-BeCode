@@ -1,0 +1,50 @@
+{
+  "template": {
+    "index_patterns": ["hids-*"],
+    "template": {
+      "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "index": {
+          "codec": "best_compression"
+        }
+      },
+      "mappings": {
+        "properties": {
+          "timestamp": {
+            "type": "date",
+            "format": "yyyy-MM-dd HH:mm:ss ZZZ"
+          },
+          "severity": {
+            "type": "keyword"
+          },
+          "module": {
+            "type": "keyword"
+          },
+          "message": {
+            "type": "text",
+            "fields": {
+              "keyword": {
+                "type": "keyword",
+                "ignore_above": 256
+              }
+            }
+          },
+          "cpu_usage": {
+            "type": "integer"
+          },
+          "memory_usage": {
+            "type": "integer"
+          },
+          "disk_usage": {
+            "type": "integer"
+          },
+          "load_average": {
+            "type": "double"
+          }
+        }
+      }
+    },
+    "priority": 100
+  }
+}

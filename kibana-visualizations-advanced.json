@@ -1,0 +1,352 @@
+{
+  "version": "8.0.0",
+  "objects": [
+    {
+      "type": "visualization",
+      "id": "hids-severity-distribution",
+      "attributes": {
+        "title": "Alert Severity Distribution (Bar Chart)",
+        "visState": {
+          "title": "Alert Severity Distribution",
+          "type": "bar",
+          "params": {
+            "grid": {
+              "categoryLines": false
+            },
+            "categoryAxes": [
+              {
+                "id": "CategoryAxis-1",
+                "type": "category",
+                "position": "left",
+                "title": {}
+              }
+            ],
+            "valueAxes": [
+              {
+                "id": "ValueAxis-1",
+                "type": "value",
+                "position": "bottom",
+                "title": {}
+              }
+            ],
+            "addLegend": true,
+            "legendPosition": "right"
+          },
+          "aggs": [
+            {
+              "id": "1",
+              "enabled": true,
+              "type": "terms",
+              "schema": "segment",
+              "params": {
+                "field": "severity.keyword",
+                "size": 10,
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "2",
+              "enabled": true,
+              "type": "count",
+              "schema": "metric"
+            }
+          ]
+        },
+        "uiStateJSON": "{}",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": {
+            "index": "hids-events*",
+            "filter": [],
+            "query": {
+              "match_all": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "visualization",
+      "id": "hids-module-breakdown",
+      "attributes": {
+        "title": "Events by Module Type (Horizontal Bar)",
+        "visState": {
+          "title": "Events by Module Type",
+          "type": "bar",
+          "params": {
+            "grid": {
+              "categoryLines": false
+            },
+            "categoryAxes": [
+              {
+                "id": "CategoryAxis-1",
+                "type": "category",
+                "position": "left",
+                "title": {}
+              }
+            ],
+            "valueAxes": [
+              {
+                "id": "ValueAxis-1",
+                "type": "value",
+                "position": "bottom",
+                "title": {}
+              }
+            ],
+            "addLegend": true,
+            "legendPosition": "right",
+            "isHorizontal": true
+          },
+          "aggs": [
+            {
+              "id": "1",
+              "enabled": true,
+              "type": "terms",
+              "schema": "segment",
+              "params": {
+                "field": "module.keyword",
+                "size": 15,
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "2",
+              "enabled": true,
+              "type": "count",
+              "schema": "metric"
+            }
+          ]
+        },
+        "uiStateJSON": "{}",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": {
+            "index": "hids-events*",
+            "filter": [],
+            "query": {
+              "match_all": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "visualization",
+      "id": "hids-threat-timeline",
+      "attributes": {
+        "title": "Threat Timeline (Events Over Time)",
+        "visState": {
+          "title": "Threat Timeline",
+          "type": "line",
+          "params": {
+            "grid": {
+              "categoryLines": false,
+              "valueAxis": "ValueAxis-1"
+            },
+            "categoryAxes": [
+              {
+                "id": "CategoryAxis-1",
+                "type": "date",
+                "position": "bottom",
+                "title": {}
+              }
+            ],
+            "valueAxes": [
+              {
+                "id": "ValueAxis-1",
+                "type": "value",
+                "position": "left",
+                "title": {}
+              }
+            ],
+            "addLegend": true,
+            "legendPosition": "bottom",
+            "showCategoryAxis": true,
+            "showValueAxis": true
+          },
+          "aggs": [
+            {
+              "id": "1",
+              "enabled": true,
+              "type": "date_histogram",
+              "schema": "segment",
+              "params": {
+                "field": "timestamp",
+                "interval": "1h",
+                "customInterval": "2h"
+              }
+            },
+            {
+              "id": "2",
+              "enabled": true,
+              "type": "terms",
+              "schema": "group",
+              "params": {
+                "field": "severity.keyword",
+                "size": 5,
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "enabled": true,
+              "type": "count",
+              "schema": "metric"
+            }
+          ]
+        },
+        "uiStateJSON": "{}",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": {
+            "index": "hids-events*",
+            "filter": [],
+            "query": {
+              "match_all": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "visualization",
+      "id": "hids-high-priority-alerts",
+      "attributes": {
+        "title": "High Priority Alerts (Last 24h)",
+        "visState": {
+          "title": "High Priority Alerts",
+          "type": "table",
+          "params": {
+            "perPage": 25,
+            "showPartialRows": false,
+            "showMetricsAtAllLevels": false,
+            "showTotal": false,
+            "totalFunc": "sum",
+            "percentageCol": ""
+          },
+          "aggs": [
+            {
+              "id": "1",
+              "enabled": true,
+              "type": "terms",
+              "schema": "bucket",
+              "params": {
+                "field": "module.keyword",
+                "size": 20,
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "2",
+              "enabled": true,
+              "type": "terms",
+              "schema": "bucket",
+              "params": {
+                "field": "severity.keyword",
+                "size": 5,
+                "order": "desc",
+                "orderBy": "_count"
+              }
+            },
+            {
+              "id": "3",
+              "enabled": true,
+              "type": "count",
+              "schema": "metric"
+            }
+          ]
+        },
+        "uiStateJSON": "{}",
+        "kibanaSavedObjectMeta": {
+          "searchSourceJSON": {
+            "index": "hids-events*",
+            "filter": [
+              {
+                "range": {
+                  "timestamp": {
+                    "gte": "now-24h",
+                    "lte": "now"
+                  }
+                }
+              },
+              {
+                "term": {
+                  "severity": "HIGH"
+                }
+              }
+            ],
+            "query": {
+              "match_all": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "dashboard",
+      "id": "hids-advanced-dashboard",
+      "attributes": {
+        "title": "HIDS Advanced Analytics Dashboard",
+        "description": "Advanced monitoring and analytics for HIDS security events",
+        "panelsJSON": [
+          {
+            "version": "8.0.0",
+            "gridData": {
+              "x": 0,
+              "y": 0,
+              "w": 24,
+              "h": 10
+            },
+            "type": "visualization",
+            "id": "hids-threat-timeline",
+            "embeddableConfig": {}
+          },
+          {
+            "version": "8.0.0",
+            "gridData": {
+              "x": 24,
+              "y": 0,
+              "w": 12,
+              "h": 10
+            },
+            "type": "visualization",
+            "id": "hids-severity-distribution",
+            "embeddableConfig": {}
+          },
+          {
+            "version": "8.0.0",
+            "gridData": {
+              "x": 36,
+              "y": 0,
+              "w": 12,
+              "h": 10
+            },
+            "type": "visualization",
+            "id": "hids-module-breakdown",
+            "embeddableConfig": {}
+          },
+          {
+            "version": "8.0.0",
+            "gridData": {
+              "x": 0,
+              "y": 10,
+              "w": 48,
+              "h": 15
+            },
+            "type": "visualization",
+            "id": "hids-high-priority-alerts",
+            "embeddableConfig": {}
+          }
+        ],
+        "timeRestore": true,
+        "timeFrom": "now-24h",
+        "timeTo": "now",
+        "refreshInterval": {
+          "pause": false,
+          "value": 30000
+        }
+      }
+    }
+  ]
+}
