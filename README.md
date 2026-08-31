@@ -2,9 +2,28 @@
 
 HIDS is a small host-based intrusion detection tool implemented in Bash. It runs regular lightweight checks (health, users, processes/net, and file integrity), records one-line JSON alerts to a log, and can produce a human summary for reporting.
 
-This repository follows the SPEC contract: all detection is Bash-only and uses only standard Linux utilities (`awk`, `sed`, `grep`, `find`, `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `getent`, `df`, `crontab`, `hostname`, `ip`).
+This repository follows the [SPEC contract](docs/SPEC.md): all detection is Bash-only and uses only standard Linux utilities (`awk`, `sed`, `grep`, `find`, `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `getent`, `df`, `crontab`, `hostname`, `ip`).
 
-Usage (entrypoint)
+## Repository Structure
+
+- `README.md` — project overview, usage, configuration, and quick-start guidance.
+- `docs/` — supporting documentation, including the HIDS checklist, Kibana setup guide, and build specification.
+- `hids.sh` / `HIDS.sh` — HIDS entrypoint scripts.
+- `config/` — runtime configuration and detection thresholds.
+- `lib/` — shared Bash helpers for configuration, alerting, rules, and utilities.
+- `modules/` — detection and reporting modules.
+- `baseline/` — baseline snapshots used for file, listener, user, and group comparisons.
+- `logs/` — sample/runtime alert and summary output files.
+- `state/` — local runtime state such as suppression and simulation tracking.
+- `*.sh`, `*.ps1`, `*.json` — operational helpers and integration assets for email, ELK/Kibana, scheduling, and demos.
+
+## Documentation
+
+- [Implementation checklist](docs/HIDS.md)
+- [Kibana setup guide](docs/KIBANA_SETUP.md)
+- [Build specification](docs/SPEC.md)
+
+## Usage (entrypoint)
 - `./hids.sh --baseline`    : write baselines for files, listeners, users (no alerts)
 - `./hids.sh --once`        : run the fast checks and write alerts to `logs/hids.log`
 - `./hids.sh --full`        : run everything including expensive SUID inventory
@@ -13,7 +32,7 @@ Usage (entrypoint)
 - `./hids.sh --ship-elk`    : run `--once` then call `elk_ship.sh --once`
 - `./hids.sh --install-cron`: install cron entries for periodic runs
 
-Log format (JSONL)
+## Log format (JSONL)
 Each alert is one JSON object per line in `logs/hids.log`. Fields:
 
  - `timestamp` : ISO 8601 UTC string
@@ -31,7 +50,7 @@ Example line:
 {"timestamp":"2026-08-31T12:02:55Z","rule":"FIM-006","severity":"CRITICAL","module":"fim","host":"vm01","message":"New SUID binary /tmp/.x","evidence":"path=/tmp/.x sha256=...","impact":"A new SUID/SGID binary appeared.","action":"Inspect the binary and remove SUID bit if unauthorized."}
 ```
 
-Rules, impacts and actions
+## Rules, impacts and actions
 The full rule list lives in `lib/rules.sh`. Brief highlights (impact → recommended action):
 
 - `USR-005`: An account with root-equivalent privileges was created. → Lock the account, inspect auth logs, review sudo history.
@@ -47,7 +66,7 @@ The full rule list lives in `lib/rules.sh`. Brief highlights (impact → recomme
 
 You can read full impact/action strings in `lib/rules.sh`.
 
-Configuration
+## Configuration
 Edit `config/hids.conf` to change thresholds and whitelists. Example keys:
 
 - `CPU_PCT_WARN`, `LOAD_PER_CORE_WARN`, `LOAD_PER_CORE_CRIT`, `MEM_PCT_WARN`
@@ -58,14 +77,14 @@ Edit `config/hids.conf` to change thresholds and whitelists. Example keys:
 
 After editing `config/hids.conf`, re-run `./hids.sh --once` or restart scheduled runs.
 
-Whitelisting a port
+## Whitelisting a port
 Add the port number to `ALLOWED_LISTEN_PORTS` in `config/hids.conf`, e.g.:
 
 ```
 ALLOWED_LISTEN_PORTS="22 80 443 53 631 8888"
 ```
 
-ELK integration
+## ELK integration
 Use the included `elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
 
 1. Create an API key in Kibana and export:
@@ -77,16 +96,16 @@ export ELASTIC_INDEX="hids-alerts"
 2. Run shipper: `./elk_ship.sh --once` or `./hids.sh --ship-elk`.
 3. Verify ingestion in Kibana with index pattern `hids-alerts*`.
 
-Simulation
+## Simulation
 The demo script `simulate_attack.sh` performs a sequence of actions to exercise detections. It refuses to run unless you set `HIDS_SIMULATE_OK=1` in the environment to avoid accidental destructive changes. It records created files and PIDs under `state/` and supports `--cleanup` to try to revert changes.
 
-Exit codes
+## Exit codes
 - `0`: clean or INFO-only
 - `1`: LOW/MEDIUM alerts present
 - `2`: HIGH alerts present
 - `3`: CRITICAL alerts present
 
-Where to start
+## Where to start
 1. `./hids.sh --baseline` — create baselines (quiet)
 2. `./hids.sh --once` — run fast checks and write alerts to `logs/hids.log`
 3. `./hids.sh --report` — generate a human summary in `logs/hids-summary.txt`
