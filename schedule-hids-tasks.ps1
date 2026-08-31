@@ -4,6 +4,8 @@
 # Define variables
 $ProjectPath = "C:\Users\musta\Desktop\HIDS_project"
 $BashPath = "bash.exe"
+# bash's `cd` cannot parse a Windows-style backslash path; translate it to the WSL /mnt/c equivalent for use inside bash -c.
+$WslProjectPath = "/mnt/c/" + ($ProjectPath.Substring(3) -replace '\\', '/')
 $EmailTo = "mustafasyed82@gmail.com"
 $SmtpUser = "mustafasyed82@gmail.com"
 $SmtpPass = "sklg fhwo zyzl xdzp"
@@ -33,7 +35,7 @@ $Task1Name = "HIDS-Hourly-Scan"
 $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) -At (Get-Date) -Once
 $Task1Action = New-ScheduledTaskAction `
   -Execute $BashPath `
-  -Argument "-c `"cd $ProjectPath && $EnvVars bash HIDS.sh --ship-elk && bash send_email_report.sh --hourly`"" `
+  -Argument "-c `"cd $WslProjectPath && $EnvVars bash HIDS.sh --ship-elk && bash send_email_report.sh --hourly`"" `
   -WorkingDirectory $ProjectPath
 
 $Task1Settings = New-ScheduledTaskSettingsSet `
@@ -67,7 +69,7 @@ $Task2Name = "HIDS-Instant-Alerts"
 $Task2Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) -At (Get-Date) -Once
 $Task2Action = New-ScheduledTaskAction `
   -Execute $BashPath `
-  -Argument "-c `"cd $ProjectPath && $EnvVars bash HIDS.sh --instant-check`"" `
+  -Argument "-c `"cd $WslProjectPath && $EnvVars bash HIDS.sh --instant-check`"" `
   -WorkingDirectory $ProjectPath
 
 $Task2Settings = New-ScheduledTaskSettingsSet `
