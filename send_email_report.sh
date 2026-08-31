@@ -152,22 +152,6 @@ if [ "${REPORT_MODE}" = "instant" ]; then
 
   STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   SUBJECT="🚨 [INSTANT SECURITY ALERT] ${HOSTNAME_STR} - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT}"
-
-  PREV_HASH=""
-  if [ -f "${STATE_FILE}" ]; then
-    PREV_HASH="$(cat "${STATE_FILE}" 2>/dev/null || echo "")"
-  fi
-
-  if [ "${CURRENT_CONTENT_HASH}" = "${PREV_HASH}" ]; then
-    echo "No changes or new alerts since the last instant report (identical HIGH/MEDIUM content). Skipping duplicate instant email."
-    exit 0
-  fi
-
-  # Only mark this content as "seen" once we've decided to actually send it below.
-  printf '%s' "${CURRENT_CONTENT_HASH}" > "${STATE_FILE}"
-
-  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  SUBJECT="🚨 [INSTANT SECURITY ALERT] ${HOSTNAME_STR} - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT}"
 else
   # Hourly Report Mode (sends regular report including when only LOW severities exist)
   if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
