@@ -12,7 +12,7 @@ $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hour
 $Task1Cmd = "cd $WslProjectPath; export EMAIL_TO='mustafasyed82@gmail.com' SMTP_USER='mustafasyed82@gmail.com' SMTP_PASS='sklg fhwo zyzl xdzp' SMTP_SERVER='smtp.gmail.com:587' ELASTIC_URL='https://my-elasticsearch-project-d17947.es.europe-west1.gcp.elastic.cloud:443' ELASTIC_API_KEY='RDRQV1I2QUJzVDlOMmpMU3NIbkE6dkZKaEd2TmRSSjkwVUdhaUtJVkxlQQ=='; bash HIDS.sh --ship-elk; bash send_email_report.sh --hourly"
 $Task1Action = New-ScheduledTaskAction `
   -Execute $BashPath `
-  -Argument "-c '$Task1Cmd'" `
+  -Argument "-c `"$Task1Cmd`"" `
   -WorkingDirectory $ProjectPath
 
 $Task1Settings = New-ScheduledTaskSettingsSet `
@@ -33,7 +33,7 @@ $Task2Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minu
 $Task2Cmd = "cd $WslProjectPath; export EMAIL_TO='mustafasyed82@gmail.com' SMTP_USER='mustafasyed82@gmail.com' SMTP_PASS='sklg fhwo zyzl xdzp' SMTP_SERVER='smtp.gmail.com:587'; bash HIDS.sh --instant-check"
 $Task2Action = New-ScheduledTaskAction `
   -Execute $BashPath `
-  -Argument "-c '$Task2Cmd'" `
+  -Argument "-c `"$Task2Cmd`"" `
   -WorkingDirectory $ProjectPath
 
 $Task2Settings = New-ScheduledTaskSettingsSet `

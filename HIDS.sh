@@ -60,6 +60,11 @@ SYSTEM_PROCESS_NAMES=(
   "udevd"
 )
 SYSTEM_PROCESS_DIR_REGEX='^/(usr/)?s?bin/|^/usr/lib/systemd/|^/lib/systemd/|^/usr/lib/udev/'
+# auditd (kernel-level execve logging) catches recon commands in real time regardless of shell
+# history settings, shell type, or whether the user/attacker flushes history at all.
+AUDIT_LOG="/var/log/audit/audit.log"
+AUDIT_RULE_KEY="hids_recon"
+AUDIT_RULE_FILE="/etc/audit/rules.d/60-hids-recon.rules"
 
 # Creates the project state directories used by the HIDS to store logs and baselines.
 ensure_state_dir() {
@@ -426,6 +431,40 @@ list_persistence_targets() {
   } | sort -u
 }
 
+# Installs auditd watch rules on whoami/id/uname/find so their execution is logged by the
+# kernel in real time, regardless of shell history settings, shell type, or attacker cooperation.
+install_audit_rules() {
+  if ! command -v auditctl >/dev/null 2>&1; then
+    echo "auditd is not installed. Install it for tamper-resistant command detection (works even if a user disables shell history):"
+    echo "  sudo apt install -y auditd"
+    echo "  sudo ./HIDS.sh --install-audit-rules"
+    return 1
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Installing audit rules requires root. Re-run as: sudo ./HIDS.sh --install-audit-rules"
+    return 1
+  fi
+
+  mkdir -p /etc/audit/rules.d
+  : > "${AUDIT_RULE_FILE}"
+  local watch_bin
+  for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find; do
+    if [ -e "${watch_bin}" ]; then
+      printf -- '-w %s -p x -k %s\n' "${watch_bin}" "${AUDIT_RULE_KEY}" >> "${AUDIT_RULE_FILE}"
+    fi
+  done
+
+  if command -v augenrules >/dev/null 2>&1; then
+    augenrules --load >/dev/null 2>&1
+  else
+    auditctl -R "${AUDIT_RULE_FILE}" >/dev/null 2>&1
+  fi
+  systemctl enable --now auditd >/dev/null 2>&1 || service auditd restart >/dev/null 2>&1 || true
+
+  log_event "LOW" "scheduler" "auditd execute-watch rules installed for whoami/id/uname/find (key=${AUDIT_RULE_KEY})"
+  echo "auditd rules installed. Execution of whoami/id/uname/find is now logged to ${AUDIT_LOG} in real time, independent of shell history."
+}
+
 # Lists shell command history files to scan (bash history for all local users).
 list_shell_history_files() {
   {
@@ -451,7 +490,7 @@ check_recon_commands() {
   while IFS= read -r hist_file; do
     [ -f "${hist_file}" ] || continue
     local key state_file last_count total_count new_lines matched matched_line
-    key="$(printf '%s' "${hist_file}" | sha256sum | awk '{print $1}')"
+    key="$(printf '%s' "${hist_file}" | tr -c 'A-Za-z0-9' '_')"
     state_file="${USER_BEHAVIOR_STATE_DIR}/hist_${key}.count"
     last_count=0
     [ -f "${state_file}" ] && last_count="$(cat "${state_file}" 2>/dev/null || echo 0)"
@@ -468,6 +507,31 @@ check_recon_commands() {
     fi
     echo "${total_count}" > "${state_file}"
   done < <(list_shell_history_files)
+
+  # auditd (if installed via --install-audit-rules) catches execution even if shell history is disabled.
+  if [ -r "${AUDIT_LOG}" ]; then
+    local audit_key audit_state_file audit_last_offset audit_total_lines audit_new_lines audit_matches exe_path
+    audit_key="$(printf '%s' "${AUDIT_LOG}" | tr -c 'A-Za-z0-9' '_')"
+    audit_state_file="${USER_BEHAVIOR_STATE_DIR}/audit_${audit_key}.offset"
+    audit_last_offset=0
+    [ -f "${audit_state_file}" ] && audit_last_offset="$(cat "${audit_state_file}" 2>/dev/null || echo 0)"
+    audit_total_lines="$(wc -l < "${AUDIT_LOG}" 2>/dev/null || echo 0)"
+    if [ "${audit_total_lines}" -lt "${audit_last_offset}" ]; then
+      audit_last_offset=0
+    fi
+    if [ "${audit_total_lines}" -gt "${audit_last_offset}" ]; then
+      audit_new_lines="$(tail -n +"$((audit_last_offset + 1))" "${AUDIT_LOG}" 2>/dev/null)"
+      audit_matches="$(printf '%s\n' "${audit_new_lines}" | grep -oE 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"' || true)"
+      if [ -n "${audit_matches}" ]; then
+        while IFS= read -r exe_path; do
+          [ -z "${exe_path}" ] && continue
+          exe_path="$(printf '%s' "${exe_path}" | sed -E 's/^name="//; s/"$//')"
+          matched_lines+=("[audit-exec] ${exe_path}")
+        done <<< "${audit_matches}"
+      fi
+    fi
+    echo "${audit_total_lines}" > "${audit_state_file}"
+  fi
 
   if [ "${#matched_lines[@]}" -eq 0 ]; then
     return 1
@@ -492,7 +556,7 @@ check_privileged_command_frequency() {
   [ -z "${auth_log}" ] && return 1
 
   local key offset_file last_offset total_lines new_lines
-  key="$(printf '%s' "${auth_log}" | sha256sum | awk '{print $1}')"
+  key="$(printf '%s' "${auth_log}" | tr -c 'A-Za-z0-9' '_')"
   offset_file="${USER_BEHAVIOR_STATE_DIR}/authlog_${key}.offset"
   last_offset=0
   [ -f "${offset_file}" ] && last_offset="$(cat "${offset_file}" 2>/dev/null || echo 0)"
@@ -568,7 +632,7 @@ check_history_clearing() {
   local hist_file cleared=""
   for hist_file in /root/.bash_history /home/*/.bash_history; do
     local key state_file last_count current_count
-    key="$(printf '%s' "${hist_file}" | sha256sum | awk '{print $1}')"
+    key="$(printf '%s' "${hist_file}" | tr -c 'A-Za-z0-9' '_')"
     state_file="${USER_BEHAVIOR_STATE_DIR}/histsize_${key}.count"
     last_count=0
     [ -f "${state_file}" ] && last_count="$(cat "${state_file}" 2>/dev/null || echo 0)"
@@ -939,6 +1003,7 @@ Usage:
   ./HIDS.sh --instant-check
   ./HIDS.sh --demo
   ./HIDS.sh --install-cron
+  ./HIDS.sh --install-audit-rules
   ./HIDS.sh --help
 
 Options:
@@ -949,6 +1014,8 @@ Options:
   --instant-check  Run one inspection cycle, ship to Elasticsearch if configured, and rely on the built-in instant alert only (no hourly summary email).
   --demo           Simulate an attack sequence that triggers log alerts.
   --install-cron   Add recurring cron jobs: hourly full report plus a per-minute instant-alert scan.
+  --install-audit-rules  Install auditd watch rules (whoami/id/uname/find) for tamper-resistant
+                         command detection, independent of shell history (requires root; run once).
   --help           Show this help menu.
 USAGE
 }
@@ -1068,6 +1135,9 @@ main() {
       ;;
     --install-cron)
       install_scheduler
+      ;;
+    --install-audit-rules)
+      install_audit_rules
       ;;
     --help|-h)
       print_help
