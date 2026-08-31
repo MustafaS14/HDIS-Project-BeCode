@@ -98,13 +98,16 @@ TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
 if [ "${REPORT_MODE}" = "instant" ]; then
   # Reduce the noisy rolling window down to the *latest* HIGH/MEDIUM status per module, sorted
-  # deterministically. This avoids false "changes" caused purely by the tail window sliding
-  # forward (older duplicate entries dropping out) rather than any real new security event.
+  # deterministically, with the timestamp stripped so a recurring identical condition (e.g. the
+  # same suspicious process flagged every scan) hashes the same instead of "changing" every
+  # minute purely because the timestamp field is different.
   LATEST_ALERTS=$(printf '%s\n' "${RECENT_EVENTS}" | awk -F'"module":"' '
     /"severity":"HIGH"|"severity":"MEDIUM"/ {
       split($2, arr, "\"")
       mod = arr[1]
-      line[mod] = $0
+      content = $0
+      sub(/^\{"timestamp":"[^"]*",/, "", content)
+      line[mod] = content
     }
     END {
       for (mod in line) print mod "\t" line[mod]
