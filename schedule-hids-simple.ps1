@@ -6,10 +6,10 @@ $BashPath = "bash.exe"
 # bash's `cd` cannot parse a Windows-style backslash path; translate it to the WSL /mnt/c equivalent for use inside bash -c.
 $WslProjectPath = "/mnt/c/" + ($ProjectPath.Substring(3) -replace '\\', '/')
 
-# Task 1: Hourly HIDS scan and ELK shipping
+# Task 1: Hourly HIDS scan, ELK shipping, and email report.
 $Task1Name = "HIDS-Hourly-Scan"
 $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) -At (Get-Date) -Once
-$Task1Cmd = "cd $WslProjectPath; export EMAIL_TO='mustafasyed82@gmail.com' SMTP_USER='mustafasyed82@gmail.com' SMTP_PASS='sklg fhwo zyzl xdzp' SMTP_SERVER='smtp.gmail.com:587' ELASTIC_URL='https://my-elasticsearch-project-d17947.es.europe-west1.gcp.elastic.cloud:443' ELASTIC_API_KEY='RDRQV1I2QUJzVDlOMmpMU3NIbkE6dkZKaEd2TmRSSjkwVUdhaUtJVkxlQQ=='; bash HIDS.sh --ship-elk; bash send_email_report.sh --hourly"
+$Task1Cmd = "cd $WslProjectPath; . ./email_config.env; bash HIDS.sh --ship-elk"
 $Task1Action = New-ScheduledTaskAction `
   -Execute $BashPath `
   -Argument "-c `"$Task1Cmd`"" `
@@ -27,10 +27,10 @@ try {
   Write-Host "✗ Failed: $_" -ForegroundColor Red
 }
 
-# Task 2: Instant alerts (runs a real scan every minute so alerts fire immediately on detection)
+# Task 2: Instant alerts (runs a real scan every minute so alerts fire immediately on detection).
 $Task2Name = "HIDS-Instant-Alerts"
 $Task2Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650) -At (Get-Date) -Once
-$Task2Cmd = "cd $WslProjectPath; export EMAIL_TO='mustafasyed82@gmail.com' SMTP_USER='mustafasyed82@gmail.com' SMTP_PASS='sklg fhwo zyzl xdzp' SMTP_SERVER='smtp.gmail.com:587'; bash HIDS.sh --instant-check"
+$Task2Cmd = "cd $WslProjectPath; . ./email_config.env; bash HIDS.sh --instant-check"
 $Task2Action = New-ScheduledTaskAction `
   -Execute $BashPath `
   -Argument "-c `"$Task2Cmd`"" `

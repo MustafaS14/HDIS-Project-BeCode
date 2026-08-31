@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# HIDS primary scheduled runner.
 set -u
 set -o pipefail
 
@@ -46,6 +47,7 @@ SUSPICIOUS_PROCESS_NAMES=(
 USER_BEHAVIOR_STATE_DIR="${STATE_DIR}/user_behavior"
 RECON_COMMAND_REGEX='(^|[[:space:]/])(whoami|uname -a|uname[[:space:]]+-a)([[:space:]]|$)|(^|[[:space:]])id([[:space:]]|$)'
 SUID_SCAN_REGEX='find[[:space:]].*-perm[[:space:]]+.*(4000|u=s)'
+HISTORY_TAMPER_REGEX='(^|[[:space:];|])(history[[:space:]]+-[[:alnum:]]*[cwd][[:alnum:]]*|history[[:space:]]+--(clear|write|delete)|unset[[:space:]]+HIST[A-Z_]*|((export|declare|typeset)[[:space:]]+)?HIST(SIZE|FILESIZE)=0|HISTFILE=/dev/null|set[[:space:]]+\+o[[:space:]]+history|shopt[[:space:]]+-u[[:space:]]+(cmdhist|lithist)|(rm|shred|unlink|truncate)[[:space:]].*(~\/|/[^[:space:]]*/)?\.(bash|zsh|sh)_history|([:>][[:space:]]*|echo[[:space:]].*>[[:space:]]*).*(~\/|/[^[:space:]]*/)?\.(bash|zsh|sh)_history)([[:space:];|]|$)'
 AUTH_LOG_CANDIDATES=("/var/log/auth.log" "/var/log/secure")
 SUDO_SU_FREQUENCY_THRESHOLD=3
 SYSTEM_PROCESS_NAMES=(
@@ -431,7 +433,7 @@ list_persistence_targets() {
   } | sort -u
 }
 
-# Installs auditd watch rules on whoami/id/uname/find so their execution is logged by the
+# Installs auditd watch rules on prohibited executables so their execution is logged by the
 # kernel in real time, regardless of shell history settings, shell type, or attacker cooperation.
 install_audit_rules() {
   if ! command -v auditctl >/dev/null 2>&1; then
@@ -448,7 +450,7 @@ install_audit_rules() {
   mkdir -p /etc/audit/rules.d
   : > "${AUDIT_RULE_FILE}"
   local watch_bin
-  for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find; do
+  for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find /usr/bin/rm /bin/rm /usr/bin/shred /bin/shred /usr/bin/unlink /bin/unlink /usr/bin/truncate /bin/truncate; do
     if [ -e "${watch_bin}" ]; then
       printf -- '-w %s -p x -k %s\n' "${watch_bin}" "${AUDIT_RULE_KEY}" >> "${AUDIT_RULE_FILE}"
     fi
@@ -461,8 +463,8 @@ install_audit_rules() {
   fi
   systemctl enable --now auditd >/dev/null 2>&1 || service auditd restart >/dev/null 2>&1 || true
 
-  log_event "LOW" "scheduler" "auditd execute-watch rules installed for whoami/id/uname/find (key=${AUDIT_RULE_KEY})"
-  echo "auditd rules installed. Execution of whoami/id/uname/find is now logged to ${AUDIT_LOG} in real time, independent of shell history."
+  log_event "LOW" "scheduler" "auditd execute-watch rules installed for recon and history-tampering executables (key=${AUDIT_RULE_KEY})"
+  echo "auditd rules installed. Prohibited command execution is now logged to ${AUDIT_LOG} in real time, independent of shell history."
 }
 
 # Lists shell command history files to scan (bash history for all local users).
@@ -474,15 +476,17 @@ list_shell_history_files() {
   } | sort -u
 }
 
-# Flags reconnaissance commands (whoami/id/uname -a/SUID scans) seen in running processes or new shell history lines.
+# Flags reconnaissance and history-tampering commands seen in running processes or new shell history lines.
 # Repeated identical commands within the same scan are collapsed into a single "Nx <command>" count.
 check_recon_commands() {
   local matched_lines=()
-  local proc_line
+  local fresh_command_matches=()
+  local proc_line observed_at
+  observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   while IFS= read -r proc_line; do
     [ -z "${proc_line}" ] && continue
-    if printf '%s' "${proc_line}" | grep -Eq "${RECON_COMMAND_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${SUID_SCAN_REGEX}"; then
-      matched_lines+=("${proc_line}")
+    if printf '%s' "${proc_line}" | grep -Eq "${RECON_COMMAND_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${SUID_SCAN_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${HISTORY_TAMPER_REGEX}"; then
+      matched_lines+=("[observed ${observed_at}] ${proc_line}")
     fi
   done < <(ps -eo command --no-headers 2>/dev/null)
 
@@ -497,11 +501,12 @@ check_recon_commands() {
     total_count="$(wc -l < "${hist_file}" 2>/dev/null || echo 0)"
     if [ "${total_count}" -gt "${last_count}" ]; then
       new_lines="$(tail -n +"$((last_count + 1))" "${hist_file}" 2>/dev/null)"
-      matched="$(printf '%s\n' "${new_lines}" | grep -E "${RECON_COMMAND_REGEX}|${SUID_SCAN_REGEX}" || true)"
+      matched="$(printf '%s\n' "${new_lines}" | grep -E "${RECON_COMMAND_REGEX}|${SUID_SCAN_REGEX}|${HISTORY_TAMPER_REGEX}" || true)"
       if [ -n "${matched}" ]; then
         while IFS= read -r matched_line; do
           [ -z "${matched_line}" ] && continue
-          matched_lines+=("${matched_line}")
+          matched_lines+=("[observed ${observed_at}] ${matched_line}")
+          fresh_command_matches+=("[observed ${observed_at}] ${matched_line}")
         done <<< "${matched}"
       fi
     fi
@@ -510,7 +515,7 @@ check_recon_commands() {
 
   # auditd (if installed via --install-audit-rules) catches execution even if shell history is disabled.
   if [ -r "${AUDIT_LOG}" ]; then
-    local audit_key audit_state_file audit_last_offset audit_total_lines audit_new_lines audit_matches exe_path
+    local audit_key audit_state_file audit_last_offset audit_total_lines audit_new_lines audit_matches audit_line exe_path audit_command audit_target audit_timestamp
     audit_key="$(printf '%s' "${AUDIT_LOG}" | tr -c 'A-Za-z0-9' '_')"
     audit_state_file="${USER_BEHAVIOR_STATE_DIR}/audit_${audit_key}.offset"
     audit_last_offset=0
@@ -521,12 +526,27 @@ check_recon_commands() {
     fi
     if [ "${audit_total_lines}" -gt "${audit_last_offset}" ]; then
       audit_new_lines="$(tail -n +"$((audit_last_offset + 1))" "${AUDIT_LOG}" 2>/dev/null)"
-      audit_matches="$(printf '%s\n' "${audit_new_lines}" | grep -oE 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"' || true)"
+      audit_matches="$(printf '%s\n' "${audit_new_lines}" | grep -E 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"|type=EXECVE.*a0="(rm|shred|unlink|truncate)".*(\.bash_history|\.zsh_history|\.sh_history)' || true)"
       if [ -n "${audit_matches}" ]; then
-        while IFS= read -r exe_path; do
-          [ -z "${exe_path}" ] && continue
-          exe_path="$(printf '%s' "${exe_path}" | sed -E 's/^name="//; s/"$//')"
-          matched_lines+=("[audit-exec] ${exe_path}")
+        while IFS= read -r audit_line; do
+          [ -z "${audit_line}" ] && continue
+          exe_path="$(printf '%s\n' "${audit_line}" | grep -oE 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"' | head -n 1 | sed -E 's/^name="//; s/"$//')"
+          if [ -z "${exe_path}" ]; then
+            audit_command="$(printf '%s\n' "${audit_line}" | sed -nE 's/.*a0="(rm|shred|unlink|truncate)".*/\1/p' | head -n 1)"
+            audit_target="$(printf '%s\n' "${audit_line}" | grep -oE '([^"[:space:]]*/|~/)?\.(bash|zsh|sh)_history' | head -n 1)"
+            if [ -z "${audit_command}" ] || [ -z "${audit_target}" ]; then
+              continue
+            fi
+            exe_path="${audit_command} ${audit_target}"
+          fi
+          audit_timestamp="$(printf '%s\n' "${audit_line}" | sed -nE 's/.*msg=audit\(([0-9]+)\.[0-9]+:[0-9]+\).*/\1/p' | head -n 1)"
+          if [ -n "${audit_timestamp}" ]; then
+            audit_timestamp="$(date -u -d "@${audit_timestamp}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "${audit_timestamp}")"
+          else
+            audit_timestamp="${observed_at}"
+          fi
+          matched_lines+=("[audit-exec ${audit_timestamp}] ${exe_path}")
+          fresh_command_matches+=("[audit-exec ${audit_timestamp}] ${exe_path}")
         done <<< "${audit_matches}"
       fi
     fi
@@ -540,7 +560,10 @@ check_recon_commands() {
   local summary
   summary="$(printf '%s\n' "${matched_lines[@]}" | sort | uniq -c | awk '{count=$1; $1=""; sub(/^ /,""); printf "%dx %s; ", count, $0}')"
 
-  log_event "HIGH" "user_activity" "Reconnaissance command activity detected (whoami/id/uname -a/SUID scan): ${summary}"
+  log_event "HIGH" "user_activity" "Prohibited command activity detected (reconnaissance, SUID scan, or history tampering): ${summary}"
+  if [ "${#fresh_command_matches[@]}" -gt 0 ]; then
+    export HIDS_RECON_COMMAND_DETECTED=1
+  fi
   return 0
 }
 
@@ -627,7 +650,7 @@ check_persistence_tampering() {
   return 1
 }
 
-# Flags shell history files that shrank dramatically since the last scan, a sign of history -c / deletion.
+# Flags any shell history file shrink since the last scan, a sign of history clearing or deletion.
 check_history_clearing() {
   local hist_file cleared=""
   for hist_file in /root/.bash_history /home/*/.bash_history; do
@@ -641,7 +664,7 @@ check_history_clearing() {
     else
       current_count=0
     fi
-    if [ "${last_count}" -gt 5 ] && [ "${current_count}" -lt $((last_count / 2)) ]; then
+    if [ "${last_count}" -gt "${current_count}" ]; then
       cleared+="${hist_file} (was ${last_count} lines, now ${current_count}); "
     fi
     echo "${current_count}" > "${state_file}"
@@ -1077,6 +1100,7 @@ run_demo() {
 # Runs the full check set in sequence: file integrity, process, network, user, privilege, unusual ports, beaconing, and brute force monitoring.
 run_checks() {
   ensure_state_dir
+  export HIDS_RECON_COMMAND_DETECTED=0
 
   module_system_health
   module_user_activity

@@ -6,15 +6,7 @@ $ProjectPath = "C:\Users\musta\Desktop\HIDS_project"
 $BashPath = "bash.exe"
 # bash's `cd` cannot parse a Windows-style backslash path; translate it to the WSL /mnt/c equivalent for use inside bash -c.
 $WslProjectPath = "/mnt/c/" + ($ProjectPath.Substring(3) -replace '\\', '/')
-$EmailTo = "mustafasyed82@gmail.com"
-$SmtpUser = "mustafasyed82@gmail.com"
-$SmtpPass = "sklg fhwo zyzl xdzp"
-$SmtpServer = "smtp.gmail.com:587"
-$ElasticUrl = "https://my-elasticsearch-project-d17947.es.europe-west1.gcp.elastic.cloud:443"
-$ElasticApiKey = "RDRQV1I2QUJzVDlOMmpMU3NIbkE6dkZKaEd2TmRSSjkwVUdhaUtJVkxlQQ=="
-
-# Environment variables for bash
-$EnvVars = "export EMAIL_TO='$EmailTo' SMTP_USER='$SmtpUser' SMTP_PASS='$SmtpPass' SMTP_SERVER='$SmtpServer' ELASTIC_URL='$ElasticUrl' ELASTIC_API_KEY='$ElasticApiKey';"
+$EnvVars = ". ./email_config.env;"
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "HIDS Task Scheduler Setup" -ForegroundColor Cyan
@@ -35,7 +27,7 @@ $Task1Name = "HIDS-Hourly-Scan"
 $Task1Trigger = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650) -At (Get-Date) -Once
 $Task1Action = New-ScheduledTaskAction `
   -Execute $BashPath `
-  -Argument "-c `"cd $WslProjectPath && $EnvVars bash HIDS.sh --ship-elk && bash send_email_report.sh --hourly`"" `
+  -Argument "-c `"cd $WslProjectPath && $EnvVars bash HIDS.sh --ship-elk`"" `
   -WorkingDirectory $ProjectPath
 
 $Task1Settings = New-ScheduledTaskSettingsSet `

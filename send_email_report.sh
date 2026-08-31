@@ -145,7 +145,7 @@ if [ "${REPORT_MODE}" = "instant" ]; then
     PREV_HASH="$(cat "${STATE_FILE}" 2>/dev/null || echo "")"
   fi
 
-  if [ "${CURRENT_CONTENT_HASH}" = "${PREV_HASH}" ]; then
+  if [ "${CURRENT_CONTENT_HASH}" = "${PREV_HASH}" ] && [ "${HIDS_RECON_COMMAND_DETECTED:-0}" != "1" ]; then
     echo "No changes or new alerts since the last instant report (identical HIGH/MEDIUM module status). Skipping duplicate instant email."
     exit 0
   fi
