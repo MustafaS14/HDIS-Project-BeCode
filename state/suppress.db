@@ -1,0 +1,4 @@
+FIM-003|path=/etc/sudoers.d/README sha256=	1788181436	1
+FIM-003|path=/etc/sudoers sha256=	1788181436	1
+FIM-003|path=/etc/shadow sha256=	1788181436	1
+FIM-003|path=/etc/gshadow sha256=	1788181436	1

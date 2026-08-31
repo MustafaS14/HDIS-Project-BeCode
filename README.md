@@ -1,169 +1,94 @@
 # HIDS Bash Project
 
-This project is a lightweight host-based intrusion detection system (HIDS) written in bash. It monitors the host for common signs of tampering, malicious activity, and persistence, then writes alerts to a persistent log file with timestamps and severity levels.
+HIDS is a small host-based intrusion detection tool implemented in Bash. It runs regular lightweight checks (health, users, processes/net, and file integrity), records one-line JSON alerts to a log, and can produce a human summary for reporting.
 
-It is intentionally built with native Linux command-line tools and Bash only (no third-party software dependencies).
+This repository follows the SPEC contract: all detection is Bash-only and uses only standard Linux utilities (`awk`, `sed`, `grep`, `find`, `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `getent`, `df`, `crontab`, `hostname`, `ip`).
 
-## What it checks
-The tool covers comprehensive monitoring modules:
+Usage (entrypoint)
+- `./hids.sh --baseline`    : write baselines for files, listeners, users (no alerts)
+- `./hids.sh --once`        : run the fast checks and write alerts to `logs/hids.log`
+- `./hids.sh --full`        : run everything including expensive SUID inventory
+- `./hids.sh --report`      : run `--once` then print/write a one-page summary
+- `./hids.sh --email-report`: run `--once` then call `send_email_report.sh` if present
+- `./hids.sh --ship-elk`    : run `--once` then call `elk_ship.sh --once`
+- `./hids.sh --install-cron`: install cron entries for periodic runs
 
-- **File integrity monitoring** (HIGH severity on tampering or deletion)
-- **Process activity monitoring** (MEDIUM/HIGH severity on suspicious processes)
-- **Network listener & unusual port monitoring** (HIGH severity on non-standard ports)
-- **C2 Beaconing detection** (HIGH severity on repeated periodic outbound signals)
-- **Brute force detection** (HIGH severity on failed login spikes followed by successful login)
-- **User account monitoring** (MEDIUM severity on new/modified accounts)
-- **Privileged binary monitoring** (HIGH severity on new SUID/SGID binaries)
+Log format (JSONL)
+Each alert is one JSON object per line in `logs/hids.log`. Fields:
 
-## Main features
-- Creates a baseline snapshot of important system state
-- Detects changed files, new processes, suspicious listeners, new user accounts, and unexpected privileged binaries
-- Writes alerts to .hids/hids.log with a standard timestamped format
-- Can be scheduled to run automatically with cron
-- Includes a simulated demo mode that triggers a real alert
-
-## Requirements
-The script is designed for Linux-based systems and expects common tools such as:
-
-- bash
-- sha256sum
-- ps
-- ss or netstat
-- find
-- getent
-- cron (optional for automatic scheduling)
-
-## Quick start
-From the project directory, run:
-
-```bash
-./HIDS.sh --baseline
-./HIDS.sh --once
-./HIDS.sh --ship-elk
-```
-
-This will create the initial baseline and run a full scan.
-The ship command runs a scan and sends newly generated events to Elasticsearch in one step.
-
-## Demo mode
-To trigger a simulated malicious activity and generate a log alert, run:
-
-```bash
-./HIDS.sh --demo
-```
-
-The demo writes to a monitored file to trigger an integrity alert using only native shell operations.
-
-## Automatic scheduling (Hourly)
-To install a recurring scheduled check that runs hourly, run:
-
-```bash
-sudo ./HIDS.sh --install-cron
-```
-
-On systems without root permissions, the script attempts to add a user crontab entry instead.
-
-## Email Security Reports & Instant Threat Alerts
-The system provides dual-mode email alerting delivered directly to your inbox:
-
-1. **Instantaneous Threat Alerts (Stateful & Deduplicated)**:
-   - Sent **immediately** upon detection if **HIGH $\ge$ 1** OR **MEDIUM $\ge$ 5**.
-   - **Deduplication Logic**: Once an instant alert is sent for an active incident, duplicate emails are suppressed. A new instant email alert is triggered **only if the number of severity alerts increases** OR **if the specific content of the alerts changes**.
-   - Subject format: `🚨 [INSTANT SECURITY ALERT] host - HIGH: X | MEDIUM: Y`
-
-2. **Routine Hourly Summary Reports**:
-   - Sent every hour on schedule via cron, summarizing total events even when only **LOW** severity routine checks exist.
-   - Subject format: `[HIDS Hourly Report] host - HIGH: X | MEDIUM: Y | LOW: Z`
-
-### Email Setup & Testing:
-
-1. Set your SMTP environment variables:
-```bash
-export EMAIL_TO="mustafasyed82@gmail.com"
-export SMTP_USER="mustafasyed82@gmail.com"
-export SMTP_PASS="your-app-password"  # Gmail App Password
-export SMTP_SERVER="smtp.gmail.com:587"
-```
-
-2. Generate an instant report on-demand:
-```bash
-./HIDS.sh --email-report
-```
-
-3. Automated Hourly Cron Job (`crontab -e`):
-```bash
-0 * * * * export EMAIL_TO="mustafasyed82@gmail.com" SMTP_USER="mustafasyed82@gmail.com" SMTP_PASS="your-app-password"; /bin/bash /path/to/HIDS_project/HIDS.sh --ship-elk >/dev/null 2>&1
-```
-
-## Output files
-The project stores working files in the .hids directory:
-
-- .hids/hids.log - persistent JSON alert log, ready for ELK/Filebeat ingestion
-- .hids/summary.txt - summary report generated after each run
-- .hids/baseline/ - saved baseline snapshots
-
-## ELK compatibility
-The log file uses JSON lines rather than plain text so Elasticsearch or Logstash can parse fields like timestamp, severity, module, and message directly.
+ - `timestamp` : ISO 8601 UTC string
+ - `rule`      : rule ID (e.g. `FIM-006`)
+ - `severity`  : one of `INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
+ - `module`    : module name (health, users, procnet, fim, etc.)
+ - `host`      : hostname
+ - `message`   : flattened, escaped message
+ - `evidence`  : flattened, escaped evidence string
+ - `impact`    : impact text from `lib/rules.sh`
+ - `action`    : recommended action text from `lib/rules.sh`
 
 Example line:
-
-```json
-{"timestamp":"2026-08-26 16:55:36 CEST","severity":"HIGH","module":"file_integrity","message":"Integrity change detected for /path/to/file"}
+```
+{"timestamp":"2026-08-31T12:02:55Z","rule":"FIM-006","severity":"CRITICAL","module":"fim","host":"vm01","message":"New SUID binary /tmp/.x","evidence":"path=/tmp/.x sha256=...","impact":"A new SUID/SGID binary appeared.","action":"Inspect the binary and remove SUID bit if unauthorized."}
 ```
 
-## Connect to ELK (Elastic Security UI)
-This repository now includes a native Bash shipper script (`elk_ship.sh`) that sends new HIDS log entries to Elasticsearch using the Bulk API.
+Rules, impacts and actions
+The full rule list lives in `lib/rules.sh`. Brief highlights (impact → recommended action):
 
-1. Create an API key in Kibana:
-	- Stack Management -> API Keys -> Create API key
-	- Save the encoded key value (used as `ELASTIC_API_KEY`)
+- `USR-005`: An account with root-equivalent privileges was created. → Lock the account, inspect auth logs, review sudo history.
+- `FIM-006`: New SUID/SGID binary vs baseline. → Inspect and remove SUID/SGID if unauthorized.
+- `FIM-007`: SUID binary outside trusted dirs. → Treat as suspicious, isolate and investigate.
+- `PRC-001`: Process running from writable dir. → Quarantine and investigate process provenance.
+- `PRC-002`: Process executable deleted from disk. → Capture evidence from memory and investigate.
+- `PRC-004`: Bracketed kernel-style name with a real exe. → Inspect executable path vs. process name.
+- `PRC-005`: PID in `/proc` but missing from `ps`. → Capture evidence — possible hidden process.
+- `NET-001`: Listener on a non-whitelisted port. → Identify process and confirm service.
+- `NET-002`: Listener bound to `0.0.0.0` on non-whitelisted port. → Restrict or stop service.
+- `SYS-100`: Metrics snapshot (INFO). → Use for trend analysis.
 
-2. Export environment variables on the Linux host where HIDS runs:
+You can read full impact/action strings in `lib/rules.sh`.
 
-```bash
-export ELASTIC_URL="https://<your-elastic-endpoint>:443"
-export ELASTIC_API_KEY="<base64-encoded-api-key>"
+Configuration
+Edit `config/hids.conf` to change thresholds and whitelists. Example keys:
+
+- `CPU_PCT_WARN`, `LOAD_PER_CORE_WARN`, `LOAD_PER_CORE_CRIT`, `MEM_PCT_WARN`
+- `FAILED_LOGIN_WARN`, `FAILED_LOGIN_CRIT`, `PRIVILEGED_GROUPS`
+- `ALLOWED_LISTEN_PORTS`, `SUSPICIOUS_BINARIES`, `WRITABLE_EXEC_DIRS`
+- `FIM_TIER1`, `FIM_TIER2`, `FIM_TIER2_DIRS`
+- `SUPPRESS_WINDOW_LOW`, `SUPPRESS_WINDOW_HIGH`, `MAX_ALERTS_PER_RUN`
+
+After editing `config/hids.conf`, re-run `./hids.sh --once` or restart scheduled runs.
+
+Whitelisting a port
+Add the port number to `ALLOWED_LISTEN_PORTS` in `config/hids.conf`, e.g.:
+
+```
+ALLOWED_LISTEN_PORTS="22 80 443 53 631 8888"
+```
+
+ELK integration
+Use the included `elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
+
+1. Create an API key in Kibana and export:
+```
+export ELASTIC_URL="https://..."
+export ELASTIC_API_KEY="..."
 export ELASTIC_INDEX="hids-alerts"
 ```
+2. Run shipper: `./elk_ship.sh --once` or `./hids.sh --ship-elk`.
+3. Verify ingestion in Kibana with index pattern `hids-alerts*`.
 
-3. Make the shipper executable and send current/new events:
+Simulation
+The demo script `simulate_attack.sh` performs a sequence of actions to exercise detections. It refuses to run unless you set `HIDS_SIMULATE_OK=1` in the environment to avoid accidental destructive changes. It records created files and PIDs under `state/` and supports `--cleanup` to try to revert changes.
 
-```bash
-chmod +x ./elk_ship.sh
-./elk_ship.sh --once
-```
+Exit codes
+- `0`: clean or INFO-only
+- `1`: LOW/MEDIUM alerts present
+- `2`: HIGH alerts present
+- `3`: CRITICAL alerts present
 
-Or use one command from the main script:
+Where to start
+1. `./hids.sh --baseline` — create baselines (quiet)
+2. `./hids.sh --once` — run fast checks and write alerts to `logs/hids.log`
+3. `./hids.sh --report` — generate a human summary in `logs/hids-summary.txt`
 
-```bash
-./HIDS.sh --ship-elk
-```
-
-4. Verify ingestion in Kibana:
-	- Discover -> select `hids-alerts*`
-	- Confirm fields like `timestamp`, `severity`, `module`, and `message`
-
-5. Optional cron shipping every minute:
-
-```bash
-* * * * * ELASTIC_URL="https://<your-elastic-endpoint>:443" ELASTIC_API_KEY="<base64-encoded-api-key>" ELASTIC_INDEX="hids-alerts" /bin/bash /path/to/HIDS_project/elk_ship.sh --once >/dev/null 2>&1
-```
-
-6. Optional Detection rule in Elastic Security:
-	- Security -> Rules -> Create new rule -> Custom query
-	- Index pattern: `hids-alerts*`
-	- Example KQL: `severity : "HIGH" or severity : "WARNING"`
-	- This will populate the Alerts screen once matching events are indexed.
-
-## ELK-provided snippet (reference)
-The exact snippet returned by ELK has been included in this repository at `elk_snippet_from_elk.sh`.
-
-- It has been adapted to a native Bash + curl variant.
-- It uses API key authentication.
-- The project's default integration path remains `elk_ship.sh`, which uses Bash + curl + API key auth and offset tracking.
-
-## Security note
-This tool is intended for educational, testing, and local monitoring use. It does not replace a full enterprise security stack or endpoint detection solution.
-
-## License
-This project is provided as a learning exercise and may be adapted for educational use.
+If you want, I can expand the README with examples of reading `logs/hids.log` with `jq`, or add a `CONTRIBUTING.md` with development notes.

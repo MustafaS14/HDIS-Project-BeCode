@@ -1,0 +1,12 @@
+HIDS Report - parrot - 2026-08-31 12:14:46 UTC
+Duration 0.0s   Rules evaluated 4
+
+  CRITICAL 8    HIGH 4    MEDIUM 0    LOW 0    INFO 1
+
+CRITICAL
+HIGH
+MEDIUM
+LOW
+INFO
+
+System: CPU 1% MEM 80% SWAP 0% DISK 5% INODE 0% LOAD/core 0.14
