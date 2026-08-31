@@ -1,292 +1,113 @@
-# HIDS — Host Intrusion Detection System
+# HIDS Bash Project
 
-A Bash-based Host Intrusion Detection System (HIDS) built with native Linux tools. No third-party software required. Designed to monitor, detect, and report suspicious activity on a Linux system across five key areas: system health, user activity, process and network auditing, file integrity, and alerting.
+HIDS is a small host-based intrusion detection tool implemented in Bash. It runs regular lightweight checks (health, users, processes/net, and file integrity), records one-line JSON alerts to a log, and can produce a human summary for reporting.
 
----
+This repository follows the [SPEC contract](docs/SPEC.md): all detection is Bash-only and uses only standard Linux utilities (`awk`, `sed`, `grep`, `find`, `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `getent`, `df`, `crontab`, `hostname`, `ip`).
 
-## Table of Contents
+## Repository Structure
 
-1. [What It Does](#what-it-does)
-2. [Requirements](#requirements)
-3. [Installation & Deployment](#installation--deployment)
-4. [Running the Tool](#running-the-tool)
-5. [Automating Execution](#automating-execution)
-6. [Modules Overview](#modules-overview)
-7. [Interpreting the Output](#interpreting-the-output)
-8. [Alert Log](#alert-log)
-9. [Customising Thresholds](#customising-thresholds)
-10. [Baseline & Deviation Detection](#baseline--deviation-detection)
-11. [Project Structure](#project-structure)
-12. [Team](#team)
+- `README.md` — project overview, usage, configuration, and quick-start guidance.
+- `docs/` — supporting documentation, including the HIDS checklist, Kibana setup guide, and build specification.
+- `hids.sh` / `HIDS.sh` — HIDS entrypoint scripts.
+- `config/` — runtime configuration and detection thresholds.
+- `lib/` — shared Bash helpers for configuration, alerting, rules, and utilities.
+- `modules/` — detection and reporting modules.
+- `baseline/` — baseline snapshots used for file, listener, user, and group comparisons.
+- `logs/` — sample/runtime alert and summary output files.
+- `state/` — local runtime state such as suppression and simulation tracking.
+- `*.sh`, `*.ps1`, `*.json` — operational helpers and integration assets for email, ELK/Kibana, scheduling, and demos.
 
----
+## Documentation
 
-## What It Does
+- [Implementation checklist](docs/HIDS.md)
+- [Kibana setup guide](docs/KIBANA_SETUP.md)
+- [Build specification](docs/SPEC.md)
 
-This HIDS continuously checks the state of your Linux machine and flags anything that looks suspicious. It covers five monitoring areas:
+## Usage (entrypoint)
+- `./hids.sh --baseline`    : write baselines for files, listeners, users (no alerts)
+- `./hids.sh --once`        : run the fast checks and write alerts to `logs/hids.log`
+- `./hids.sh --full`        : run everything including expensive SUID inventory
+- `./hids.sh --report`      : run `--once` then print/write a one-page summary
+- `./hids.sh --email-report`: run `--once` then call `send_email_report.sh` if present
+- `./hids.sh --ship-elk`    : run `--once` then call `elk_ship.sh --once`
+- `./hids.sh --install-cron`: install cron entries for periodic runs
 
-| Module | What it watches |
-|---|---|
-| **System Health** | CPU, memory, disk usage — are resources under abnormal stress? |
-| **User Activity** | Who is logged in, recent logins, failed login attempts, unexpected accounts |
-| **Process & Network Audit** | Running processes with suspicious characteristics, open ports, active connections |
-| **File Integrity** | Changes to critical system files, dangerous permission settings, recent modifications |
-| **Alerting** | Timestamped, severity-labelled alerts written to a persistent log file |
+## Log format (JSONL)
+Each alert is one JSON object per line in `logs/hids.log`. Fields:
 
----
+ - `timestamp` : ISO 8601 UTC string
+ - `rule`      : rule ID (e.g. `FIM-006`)
+ - `severity`  : one of `INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
+ - `module`    : module name (health, users, procnet, fim, etc.)
+ - `host`      : hostname
+ - `message`   : flattened, escaped message
+ - `evidence`  : flattened, escaped evidence string
+ - `impact`    : impact text from `lib/rules.sh`
+ - `action`    : recommended action text from `lib/rules.sh`
 
-## Requirements
-
-- A Linux system (tested on Ubuntu/Debian)
-- Bash 4.0 or later
-- Standard Linux utilities: `awk`, `grep`, `ps`, `ss` (or `netstat`), `find`, `stat`, `last`, `who`, `df`, `free`, `md5sum`
-- `cron` or `systemd` (for automated scheduling)
-- Root or `sudo` privileges for full coverage (some checks require elevated permissions)
-
----
-
-## Installation & Deployment
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/MustafaS14/HDIS-Project-BeCode.git
-cd HDIS-Project-BeCode
-
-# 2. Make all scripts executable
-chmod +x hids.sh
-chmod +x modules/*.sh   # if using modular layout
-
-# 3. (Optional) Create the baseline on first run — see section below
-sudo ./hids.sh --baseline
+Example line:
+```
+{"timestamp":"2026-08-31T12:02:55Z","rule":"FIM-006","severity":"CRITICAL","module":"fim","host":"vm01","message":"New SUID binary /tmp/.x","evidence":"path=/tmp/.x sha256=...","impact":"A new SUID/SGID binary appeared.","action":"Inspect the binary and remove SUID bit if unauthorized."}
 ```
 
----
-
-## Running the Tool
-
-### Single run (manual)
-
-```bash
-sudo ./hids.sh
-```
-
-### Run a specific module only
-
-```bash
-sudo ./hids.sh --module health
-sudo ./hids.sh --module users
-sudo ./hids.sh --module processes
-sudo ./hids.sh --module files
-```
-
-### Generate a summary report
-
-```bash
-sudo ./hids.sh --report
-```
-
----
-
-## Automating Execution
-
-The tool is designed to run without manual intervention. Two approaches are supported:
-
-### Using cron
-
-```bash
-# Edit the root crontab
-sudo crontab -e
-
-# Run the HIDS every 15 minutes
-*/15 * * * * /path/to/HDIS-Project-BeCode/hids.sh >> /var/log/hids/cron.log 2>&1
-```
-
-### Using systemd timer
-
-Create `/etc/systemd/system/hids.service` and `/etc/systemd/system/hids.timer`, then:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now hids.timer
-```
-
----
-
-## Modules Overview
-
-### Module 1 — System Health
-
-Checks CPU usage, memory consumption, and disk usage against configurable thresholds. If any metric exceeds its threshold, an alert is raised with the current value.
-
-**Example output:**
-```
-[OK]   CPU usage: 12%
-[WARN] Memory usage: 87% (threshold: 80%)
-[OK]   Disk usage (/): 54%
-```
-
-### Module 2 — User Activity
-
-Lists currently logged-in users, recent login history, failed authentication attempts (from `/var/log/auth.log`), and checks for unexpected user accounts or UID 0 accounts other than root.
-
-**Example output:**
-```
-[INFO] Currently logged in: mustafa (pts/0, 10.0.0.5)
-[ALERT] 14 failed login attempts for root in the last hour
-[ALERT] Unexpected UID 0 account detected: ghost
-```
-
-### Module 3 — Process & Network Audit
-
-Lists all running processes and flags those that:
-- Run from `/tmp`, `/dev/shm`, or other unusual locations
-- Are owned by unexpected users
-- Consume abnormally high CPU or memory
-
-Also lists all listening ports and active connections, flagging any that are unexpected.
-
-**Example output:**
-```
-[OK]   Listening ports: 22 (ssh), 80 (nginx)
-[ALERT] Process running from /tmp: pid=4821 cmd=./backdoor user=www-data
-[ALERT] Unexpected listening port: 4444
-```
-
-### Module 4 — File Integrity
-
-On first run (or when `--baseline` is passed), records MD5 checksums of critical files (e.g. `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`). On subsequent runs, compares current checksums against the baseline and alerts on any mismatch.
-
-Also checks for:
-- World-writable files in sensitive directories
-- SUID/SGID binaries not in the known-good whitelist
-- Files modified in the last N minutes in sensitive paths
-
-**Example output:**
-```
-[OK]   /etc/passwd — checksum unchanged
-[ALERT] /etc/sudoers — checksum CHANGED (baseline mismatch)
-[ALERT] New SUID binary found: /usr/local/bin/suspicious
-```
-
-### Module 5 — Alerting
-
-All alerts from all modules are written to a persistent log file with a timestamp and severity level. The log is append-only and survives reboots.
-
----
-
-## Interpreting the Output
-
-Each line of output is prefixed with a status tag:
-
-| Tag | Meaning |
-|---|---|
-| `[OK]` | Check passed — value is within normal range |
-| `[INFO]` | Informational — no action required |
-| `[WARN]` | Warning — investigate when convenient |
-| `[ALERT]` | Alert — something unusual was detected, investigate promptly |
-| `[CRITICAL]` | Critical — immediate action recommended |
-
-Terminal output is colour-coded: green for OK, yellow for WARN, red for ALERT/CRITICAL.
-
----
-
-## Alert Log
-
-All alerts are appended to a persistent log file (default: `/var/log/hids/alerts.log`).
-
-**Log format:**
-```
-2025-06-01T14:32:10 [ALERT] [users] 14 failed login attempts for root in the last hour
-2025-06-01T14:32:11 [CRITICAL] [files] /etc/sudoers checksum mismatch — file may have been tampered with
-```
-
-Each entry contains:
-- ISO 8601 timestamp
-- Severity level
-- Module that raised the alert
-- Human-readable description
-
-To follow the log in real time:
-```bash
-tail -f /var/log/hids/alerts.log
-```
-
----
-
-## Customising Thresholds
-
-Thresholds are defined in `config.conf` in the root of the repository. Edit this file to adapt the tool to your environment without modifying any script.
-
-```bash
-# config.conf — HIDS configuration
-
-# System Health thresholds (percentages)
-CPU_THRESHOLD=80
-MEMORY_THRESHOLD=80
-DISK_THRESHOLD=90
-
-# User Activity
-MAX_FAILED_LOGINS=5          # Alert if more than this many failed logins in the last hour
-ALLOWED_LOGIN_HOURS="06-22"  # Alert on logins outside these hours (24h format)
-
-# File Integrity
-BASELINE_FILE="/var/lib/hids/baseline.md5"
-CRITICAL_FILES="/etc/passwd /etc/shadow /etc/sudoers /etc/hosts /etc/crontab"
-RECENT_FILE_MINUTES=60       # Alert on files modified in the last N minutes in sensitive paths
-
-# Alerting
-LOG_FILE="/var/log/hids/alerts.log"
-LOG_LEVEL="WARN"             # Minimum severity to log: INFO | WARN | ALERT | CRITICAL
-```
-
-After editing `config.conf`, no restart or reload is needed — the tool reads it on every run.
-
----
-
-## Baseline & Deviation Detection
-
-On the first run, pass `--baseline` to snapshot the current state of the machine:
-
-```bash
-sudo ./hids.sh --baseline
-```
-
-This records:
-- MD5 checksums of all files listed in `CRITICAL_FILES`
-- The list of SUID/SGID binaries currently on the system
-- Currently listening ports
-
-On every subsequent run, the tool compares the live state against this baseline and alerts on any deviation.
-
-To reset the baseline (e.g. after a planned system change):
-
-```bash
-sudo ./hids.sh --baseline --force
-```
-
----
-
-## Project Structure
+## Rules, impacts and actions
+The full rule list lives in `lib/rules.sh`. Brief highlights (impact → recommended action):
+
+- `USR-005`: An account with root-equivalent privileges was created. → Lock the account, inspect auth logs, review sudo history.
+- `FIM-006`: New SUID/SGID binary vs baseline. → Inspect and remove SUID/SGID if unauthorized.
+- `FIM-007`: SUID binary outside trusted dirs. → Treat as suspicious, isolate and investigate.
+- `PRC-001`: Process running from writable dir. → Quarantine and investigate process provenance.
+- `PRC-002`: Process executable deleted from disk. → Capture evidence from memory and investigate.
+- `PRC-004`: Bracketed kernel-style name with a real exe. → Inspect executable path vs. process name.
+- `PRC-005`: PID in `/proc` but missing from `ps`. → Capture evidence — possible hidden process.
+- `NET-001`: Listener on a non-whitelisted port. → Identify process and confirm service.
+- `NET-002`: Listener bound to `0.0.0.0` on non-whitelisted port. → Restrict or stop service.
+- `SYS-100`: Metrics snapshot (INFO). → Use for trend analysis.
+
+You can read full impact/action strings in `lib/rules.sh`.
+
+## Configuration
+Edit `config/hids.conf` to change thresholds and whitelists. Example keys:
+
+- `CPU_PCT_WARN`, `LOAD_PER_CORE_WARN`, `LOAD_PER_CORE_CRIT`, `MEM_PCT_WARN`
+- `FAILED_LOGIN_WARN`, `FAILED_LOGIN_CRIT`, `PRIVILEGED_GROUPS`
+- `ALLOWED_LISTEN_PORTS`, `SUSPICIOUS_BINARIES`, `WRITABLE_EXEC_DIRS`
+- `FIM_TIER1`, `FIM_TIER2`, `FIM_TIER2_DIRS`
+- `SUPPRESS_WINDOW_LOW`, `SUPPRESS_WINDOW_HIGH`, `MAX_ALERTS_PER_RUN`
+
+After editing `config/hids.conf`, re-run `./hids.sh --once` or restart scheduled runs.
+
+## Whitelisting a port
+Add the port number to `ALLOWED_LISTEN_PORTS` in `config/hids.conf`, e.g.:
 
 ```
-HDIS-Project-BeCode/
-├── hids.sh              # Main entry point
-├── config.conf          # Configurable thresholds and paths
-├── modules/
-│   ├── health.sh        # Module 1 — System Health
-│   ├── users.sh         # Module 2 — User Activity
-│   ├── processes.sh     # Module 3 — Process & Network Audit
-│   ├── files.sh         # Module 4 — File Integrity
-│   └── alerting.sh      # Module 5 — Alerting
-├── research.md          # Research document (completed before coding)
-└── README.md            # This file
+ALLOWED_LISTEN_PORTS="22 80 443 53 631 8888"
 ```
 
----
+## ELK integration
+Use the included `elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
 
-## Team
+1. Create an API key in Kibana and export:
+```
+export ELASTIC_URL="https://..."
+export ELASTIC_API_KEY="..."
+export ELASTIC_INDEX="hids-alerts"
+```
+2. Run shipper: `./elk_ship.sh --once` or `./hids.sh --ship-elk`.
+3. Verify ingestion in Kibana with index pattern `hids-alerts*`.
 
-Built by a team of three as part of the BeCode Linux Capstone Project.
+## Simulation
+The demo script `simulate_attack.sh` performs a sequence of actions to exercise detections. It refuses to run unless you set `HIDS_SIMULATE_OK=1` in the environment to avoid accidental destructive changes. It records created files and PIDs under `state/` and supports `--cleanup` to try to revert changes.
 
-> *"The threat is already inside. Your job is to find it before it finds you."*
+## Exit codes
+- `0`: clean or INFO-only
+- `1`: LOW/MEDIUM alerts present
+- `2`: HIGH alerts present
+- `3`: CRITICAL alerts present
 
+## Where to start
+1. `./hids.sh --baseline` — create baselines (quiet)
+2. `./hids.sh --once` — run fast checks and write alerts to `logs/hids.log`
+3. `./hids.sh --report` — generate a human summary in `logs/hids-summary.txt`
+
+If you want, I can expand the README with examples of reading `logs/hids.log` with `jq`, or add a `CONTRIBUTING.md` with development notes.
