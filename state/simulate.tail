@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-31T12:33:56Z","rule":"FIM-003","severity":"HIGH","module":"fim","host":"parrot","message":"New monitored file '/etc/sudoers.d/README' appeared","evidence":"path=/etc/sudoers.d/README sha256=","impact":"","action":""}
+{"timestamp":"2026-08-31T12:33:56Z","rule":"FIM-003","severity":"HIGH","module":"fim","host":"parrot","message":"New monitored file '/etc/sudoers' appeared","evidence":"path=/etc/sudoers sha256=","impact":"","action":""}
+{"timestamp":"2026-08-31T12:33:56Z","rule":"FIM-003","severity":"HIGH","module":"fim","host":"parrot","message":"New monitored file '/etc/shadow' appeared","evidence":"path=/etc/shadow sha256=","impact":"","action":""}
+{"timestamp":"2026-08-31T12:33:56Z","rule":"FIM-003","severity":"HIGH","module":"fim","host":"parrot","message":"New monitored file '/etc/gshadow' appeared","evidence":"path=/etc/gshadow sha256=","impact":"","action":""}

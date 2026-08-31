@@ -1,0 +1,2 @@
+adm:x:4:
+sudo:x:27:user
