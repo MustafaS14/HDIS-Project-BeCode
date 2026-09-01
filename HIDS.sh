@@ -547,7 +547,7 @@ check_recon_commands() {
         done <<< "${matched}"
       fi
     fi
-    echo "${total_count}" > "${state_file}"
+    printf '%s\n' "${total_count}" > "${state_file}" 2>/dev/null || true
   done < <(list_shell_history_files)
 
   # auditd (if installed via --install-audit-rules) catches execution even if shell history is disabled.
@@ -587,7 +587,7 @@ check_recon_commands() {
         done <<< "${audit_matches}"
       fi
     fi
-    echo "${audit_total_lines}" > "${audit_state_file}"
+    printf '%s\n' "${audit_total_lines}" > "${audit_state_file}" 2>/dev/null || true
   fi
 
   if [ "${#matched_lines[@]}" -eq 0 ]; then
@@ -625,7 +625,7 @@ check_privileged_command_frequency() {
     last_offset=0
   fi
   new_lines="$(tail -n +"$((last_offset + 1))" "${auth_log}" 2>/dev/null)"
-  echo "${total_lines}" > "${offset_file}"
+  printf '%s\n' "${total_lines}" > "${offset_file}" 2>/dev/null || true
   [ -z "${new_lines}" ] && return 1
 
   local sudo_lines
@@ -673,9 +673,9 @@ check_persistence_tampering() {
   done < "${BASELINE_DIR}/persistence_hashes.txt"
 
   local known_targets current_targets new_targets
-  known_targets="$(awk -F'\t' '{print $1}' "${BASELINE_DIR}/persistence_hashes.txt" | sort)"
+  known_targets="$(awk -F'\t' '{print $1}' "${BASELINE_DIR}/persistence_hashes.txt" | LC_ALL=C sort -u)"
   current_targets="$(list_persistence_targets)"
-  new_targets="$(comm -13 <(printf '%s\n' "${known_targets}") <(printf '%s\n' "${current_targets}" | sort))"
+  new_targets="$(comm -13 <(printf '%s\n' "${known_targets}" | LC_ALL=C sort -u) <(printf '%s\n' "${current_targets}" | LC_ALL=C sort -u))"
   if [ -n "${new_targets}" ]; then
     issues+="new persistence file(s): $(printf '%s' "${new_targets}" | tr '\n' ',' ); "
   fi
@@ -704,7 +704,7 @@ check_history_clearing() {
     if [ "${last_count}" -gt "${current_count}" ]; then
       cleared+="${hist_file} (was ${last_count} lines, now ${current_count}); "
     fi
-    echo "${current_count}" > "${state_file}"
+    printf '%s\n' "${current_count}" > "${state_file}" 2>/dev/null || true
   done
 
   if [ -n "${cleared}" ]; then
@@ -837,7 +837,7 @@ check_process_activity() {
   local current_processes
   current_processes="$(ps -eo comm --no-headers 2>/dev/null | sort -u)"
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/processes.txt") <(printf '%s\n' "${current_processes}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/processes.txt") <(printf '%s\n' "${current_processes}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "process_monitor" "Unexpected new processes detected: ${delta}"
@@ -863,7 +863,7 @@ check_network_activity() {
   fi
 
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/network.txt") <(printf '%s\n' "${current_network}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/network.txt") <(printf '%s\n' "${current_network}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "HIGH" "network_monitor" "Unexpected network listener detected: ${delta}"
@@ -882,7 +882,7 @@ check_user_activity() {
   local current_users
   current_users="$(getent passwd 2>/dev/null | sort)"
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/users.txt") <(printf '%s\n' "${current_users}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/users.txt") <(printf '%s\n' "${current_users}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "user_monitor" "New user or account change detected: ${delta}"
@@ -906,7 +906,7 @@ check_privilege_activity() {
   fi
 
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/privileged.txt") <(printf '%s\n' "${current_privileged}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/privileged.txt") <(printf '%s\n' "${current_privileged}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "HIGH" "privilege_monitor" "New privileged binary detected: ${delta}"
@@ -1021,7 +1021,7 @@ install_scheduler() {
       printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       printf '%s\n' ""
       printf '%s\n' "# HIDS report (runs every 15 minutes)"
-      printf '*/15 * * * * bash -c '"'"'cd %s && [ -f email_config.env ] && . ./email_config.env; ./HIDS.sh --once'"'"' >/dev/null 2>&1\n' "${PROJECT_ROOT}"
+      printf '*/15 * * * * root bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
     } > "${cron_file}"
     chmod 0644 "${cron_file}"
     log_event "LOW" "scheduler" "Cron job installed at ${cron_file} (15-minute report)"
@@ -1041,7 +1041,7 @@ install_scheduler() {
         cat "${user_cron}"
         printf '%s\n' ""
         printf '%s\n' "# HIDS report (runs every 15 minutes)"
-        printf '*/15 * * * * bash -c '"'"'cd %s && [ -f email_config.env ] && . ./email_config.env; ./HIDS.sh --once'"'"' >/dev/null 2>&1\n' "${PROJECT_ROOT}"
+        printf '*/15 * * * * bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
       } > "${user_cron}.final"
       
       crontab "${user_cron}.final"

@@ -122,14 +122,14 @@ read_failed_logins() {
 # Diffs getent passwd against baseline/users.txt.
 check_new_accounts() {
   local current_passwd baseline_passwd new_lines
-  current_passwd="$(getent passwd 2>/dev/null | sort)"
+  current_passwd="$(getent passwd 2>/dev/null | LC_ALL=C sort -u)"
   baseline_passwd="${BASELINE_DIR}/users.txt"
   if [ ! -f "${baseline_passwd}" ]; then
     write_users_baseline
     return 0
   fi
 
-  new_lines="$(comm -13 "${baseline_passwd}" <(printf '%s\n' "${current_passwd}" | sort))"
+  new_lines="$(comm -13 <(LC_ALL=C sort -u "${baseline_passwd}") <(printf '%s\n' "${current_passwd}" | LC_ALL=C sort -u))"
   if [ -n "${new_lines}" ]; then
     while IFS= read -r line; do
       [ -z "${line}" ] && continue
