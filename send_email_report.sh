@@ -73,6 +73,11 @@ if [ ! -f "${LOG_FILE}" ]; then
   exit 1
 fi
 
+if [ "${REPORT_MODE}" = "instant" ]; then
+  echo "Instant alert email mode is disabled; hourly email reports are still active."
+  exit 0
+fi
+
 # Extract recent log entries (rolling window shown in the email body/summary for both modes)
 RECENT_EVENTS="$(tail -n "${LINES_COUNT}" "${LOG_FILE}" 2>/dev/null || true)"
 
@@ -96,74 +101,13 @@ LOW_COUNT=${LOW_COUNT:-0}
 
 TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
-if [ "${REPORT_MODE}" = "instant" ]; then
-  # Reduce the noisy rolling window down to the *latest* HIGH/MEDIUM status per module, sorted
-  # deterministically, with the timestamp stripped so a recurring identical condition (e.g. the
-  # same suspicious process flagged every scan) hashes the same instead of "changing" every
-  # minute purely because the timestamp field is different.
-  LATEST_ALERTS=$(printf '%s\n' "${RECENT_EVENTS}" | awk -F'"module":"' '
-    /"severity":"HIGH"|"severity":"MEDIUM"/ {
-      split($2, arr, "\"")
-      mod = arr[1]
-      content = $0
-      sub(/^\{"timestamp":"[^"]*",/, "", content)
-      line[mod] = content
-    }
-    END {
-      for (mod in line) print mod "\t" line[mod]
-    }
-  ' | sort | cut -f2-)
-
-  LATEST_HIGH_COUNT=$(printf '%s\n' "${LATEST_ALERTS}" | grep -c '"severity":"HIGH"' 2>/dev/null || true)
-  LATEST_MEDIUM_COUNT=$(printf '%s\n' "${LATEST_ALERTS}" | grep -c '"severity":"MEDIUM"' 2>/dev/null || true)
-  LATEST_HIGH_COUNT=$(echo "${LATEST_HIGH_COUNT}" | tr -d '[:space:]')
-  LATEST_MEDIUM_COUNT=$(echo "${LATEST_MEDIUM_COUNT}" | tr -d '[:space:]')
-  LATEST_HIGH_COUNT=${LATEST_HIGH_COUNT:-0}
-  LATEST_MEDIUM_COUNT=${LATEST_MEDIUM_COUNT:-0}
-
-  if [ "${LATEST_HIGH_COUNT}" -lt 1 ] && [ "${LATEST_MEDIUM_COUNT}" -lt 5 ]; then
-    echo "Instant alert threshold not met (Requires HIGH >= 1 or MEDIUM >= 5 among current module statuses; Current HIGH: ${LATEST_HIGH_COUNT}, MEDIUM: ${LATEST_MEDIUM_COUNT}). Skipping instant email."
-    exit 0
-  fi
-
-  # Deduplicate against the previously *sent* instant report: only send again if the current
-  # per-module HIGH/MEDIUM status actually differs (new events, changed messages, changed
-  # severities), rather than re-sending an identical report every single per-minute scan.
-  mkdir -p "${STATE_DIR}"
-  STATE_FILE="${STATE_DIR}/last_instant_alert.state"
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    CURRENT_CONTENT_HASH="$(printf '%s' "${LATEST_ALERTS}" | sha256sum | awk '{print $1}')"
-  elif command -v md5sum >/dev/null 2>&1; then
-    CURRENT_CONTENT_HASH="$(printf '%s' "${LATEST_ALERTS}" | md5sum | awk '{print $1}')"
-  else
-    CURRENT_CONTENT_HASH="$(printf '%s' "${LATEST_ALERTS}" | cksum | awk '{print $1}')"
-  fi
-
-  PREV_HASH=""
-  if [ -f "${STATE_FILE}" ]; then
-    PREV_HASH="$(cat "${STATE_FILE}" 2>/dev/null || echo "")"
-  fi
-
-  if [ "${CURRENT_CONTENT_HASH}" = "${PREV_HASH}" ] && [ "${HIDS_RECON_COMMAND_DETECTED:-0}" != "1" ]; then
-    echo "No changes or new alerts since the last instant report (identical HIGH/MEDIUM module status). Skipping duplicate instant email."
-    exit 0
-  fi
-
-  # Only mark this content as "seen" once we've decided to actually send it below.
-  printf '%s' "${CURRENT_CONTENT_HASH}" > "${STATE_FILE}"
-
-  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  SUBJECT="🚨 [INSTANT SECURITY ALERT] ${HOSTNAME_STR} - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT}"
-else
-  # Hourly Report Mode (sends regular report including when only LOW severities exist)
-  if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
-    echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
-    exit 0
-  fi
-  STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-  SUBJECT="[HIDS Hourly Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+# Scheduled Report Mode (sends regular report including when only LOW severities exist)
+if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
+  echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
+  exit 0
 fi
+STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+SUBJECT="[HIDS 15-Minute Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 
 # Build professional HTML email payload file
 PAYLOAD_FILE="$(mktemp)"
@@ -491,11 +435,19 @@ if [ -z "${EMAIL_TO}" ]; then
   exit 0
 fi
 
+if [ "${HIDS_EMAIL_DRY_RUN:-false}" = "true" ]; then
+  echo "HIDS_EMAIL_DRY_RUN=true; displaying email payload without sending."
+  echo ""
+  cat "${PAYLOAD_FILE}"
+  rm -f "${PAYLOAD_FILE}"
+  exit 0
+fi
+
 # Send Email via curl SMTP or sendmail
 echo "Sending HIDS report email to ${EMAIL_TO}..."
 
 if command -v curl >/dev/null 2>&1 && [ -n "${SMTP_USER}" ] && [ -n "${SMTP_PASS}" ]; then
-  if curl --ssl-reqd \
+  if curl --ssl-reqd -k \
     --url "smtp://${SMTP_SERVER}" \
     --user "${SMTP_USER}:${SMTP_PASS}" \
     --mail-from "${SMTP_USER}" \

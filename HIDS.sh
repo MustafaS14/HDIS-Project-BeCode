@@ -31,6 +31,9 @@ HEALTH_CPU_TEMP_C=80
 HEALTH_STATE_FILE="${STATE_DIR}/system_health.state"
 # Number of exceeded metrics required to escalate system_health severity from MEDIUM to HIGH.
 HEALTH_HIGH_SEVERITY_COUNT=3
+FAILED_LOGIN_WARN=5
+FAILED_LOGIN_CRIT=20
+FAILED_LOGIN_WINDOW_MIN=10
 SUSPICIOUS_PROCESS_NAMES=(
   "nc"
   "ncat"
@@ -358,6 +361,40 @@ module_system_health() {
   fi
 }
 
+# Collects recent failed login attempts from the sources commonly available on Linux VMs.
+collect_failed_login_events() {
+  local failures=""
+
+  if command -v lastb >/dev/null 2>&1; then
+    failures="$(lastb -n 20 -a -w 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' || true)"
+    if [ -n "${failures}" ]; then
+      printf '%s\n' "${failures}"
+      return 0
+    fi
+  fi
+
+  local auth_log
+  for auth_log in "${AUTH_LOG_CANDIDATES[@]}"; do
+    if [ -r "${auth_log}" ]; then
+      failures="$(grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' "${auth_log}" 2>/dev/null | tail -n 20 || true)"
+      if [ -n "${failures}" ]; then
+        printf '%s\n' "${failures}"
+        return 0
+      fi
+    fi
+  done
+
+  if command -v journalctl >/dev/null 2>&1; then
+    failures="$(journalctl -u ssh -u sshd -u ssh.service -u sshd.service --since "${FAILED_LOGIN_WINDOW_MIN} minutes ago" --no-pager 2>/dev/null | grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' | tail -n 20 || true)"
+    if [ -n "${failures}" ]; then
+      printf '%s\n' "${failures}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 # Module 2: checks for current and recent user activity to spot abnormal logins or unexpected accounts.
 module_user_activity() {
   local current_users
@@ -365,7 +402,7 @@ module_user_activity() {
   local recent_logins
   recent_logins="$(last -n 10 2>/dev/null || true)"
   local failed_logins
-  failed_logins="$(lastb -n 10 2>/dev/null || true)"
+  failed_logins="$(collect_failed_login_events || true)"
 
   if [ -n "${current_users}" ]; then
     log_event "LOW" "user_activity" "Current active sessions: ${current_users}"
@@ -929,10 +966,10 @@ check_beaconing() {
 check_brute_force() {
   ensure_state_dir
 
-  local failed_count=0
-  if command -v lastb >/dev/null 2>&1; then
-    failed_count="$(lastb -n 20 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' | wc -l | tr -d ' ')"
-  fi
+  local failed_login_events failed_count
+  failed_login_events="$(collect_failed_login_events || true)"
+  failed_count="$(printf '%s\n' "${failed_login_events}" | grep -c . 2>/dev/null || true)"
+  failed_count="$(echo "${failed_count}" | tr -d ' ')"
 
   local active_login=""
   if command -v who >/dev/null 2>&1; then
@@ -973,38 +1010,43 @@ generate_summary() {
   log_event "LOW" "summary" "Summary report generated at ${summary_file}"
 }
 
-# Installs cron entries so the HIDS runs automatically: hourly full report plus a per-minute instant-alert scan.
+# Installs a cron entry so the HIDS runs automatically every 15 minutes.
 install_scheduler() {
   ensure_state_dir
 
-  # Source email_config.env if present so cron's minimal environment has EMAIL_TO/SMTP_*/ELASTIC_* vars.
-  local env_source="[ -f ${PROJECT_ROOT}/email_config.env ] && . ${PROJECT_ROOT}/email_config.env;"
-  local hourly_cmd="cd ${PROJECT_ROOT} && ${env_source} bash HIDS.sh --once >/dev/null 2>&1"
-  local instant_cmd="cd ${PROJECT_ROOT} && ${env_source} bash HIDS.sh --instant-check >/dev/null 2>&1"
-
   if [ "$(id -u)" -eq 0 ]; then
     local cron_file="/etc/cron.d/hids-monitor"
-    printf '%s\n' "SHELL=/bin/bash" > "${cron_file}"
-    printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "${cron_file}"
-    printf '0 * * * * root %s\n' "${hourly_cmd}" >> "${cron_file}"
-    printf '* * * * * root %s\n' "${instant_cmd}" >> "${cron_file}"
+    {
+      printf '%s\n' "SHELL=/bin/bash"
+      printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      printf '%s\n' ""
+      printf '%s\n' "# HIDS report (runs every 15 minutes)"
+      printf '*/15 * * * * bash -c '"'"'cd %s && [ -f email_config.env ] && . ./email_config.env; ./HIDS.sh --once'"'"' >/dev/null 2>&1\n' "${PROJECT_ROOT}"
+    } > "${cron_file}"
     chmod 0644 "${cron_file}"
-    log_event "LOW" "scheduler" "Cron jobs installed at ${cron_file} (hourly report + per-minute instant alerts)"
+    log_event "LOW" "scheduler" "Cron job installed at ${cron_file} (15-minute report)"
     echo "Scheduler installed at ${cron_file}"
   else
     if command -v crontab >/dev/null 2>&1; then
       local user_cron
       user_cron="$(mktemp)"
-      crontab -l 2>/dev/null > "${user_cron}"
-      if ! grep -Fq "HIDS.sh --once" "${user_cron}" 2>/dev/null; then
-        printf '0 * * * * %s\n' "${hourly_cmd}" >> "${user_cron}"
-      fi
-      if ! grep -Fq "HIDS.sh --instant-check" "${user_cron}" 2>/dev/null; then
-        printf '* * * * * %s\n' "${instant_cmd}" >> "${user_cron}"
-      fi
-      crontab "${user_cron}"
-      rm -f "${user_cron}"
-      log_event "LOW" "scheduler" "User cron entries installed for ${USER} (hourly report + per-minute instant alerts)"
+      crontab -l 2>/dev/null > "${user_cron}" || true
+      
+      # Remove any existing HIDS cron entries to avoid duplicates
+      grep -v "HIDS.sh" "${user_cron}" > "${user_cron}.new" 2>/dev/null || true
+      mv "${user_cron}.new" "${user_cron}"
+      
+      # Add fresh entries
+      {
+        cat "${user_cron}"
+        printf '%s\n' ""
+        printf '%s\n' "# HIDS report (runs every 15 minutes)"
+        printf '*/15 * * * * bash -c '"'"'cd %s && [ -f email_config.env ] && . ./email_config.env; ./HIDS.sh --once'"'"' >/dev/null 2>&1\n' "${PROJECT_ROOT}"
+      } > "${user_cron}.final"
+      
+      crontab "${user_cron}.final"
+      rm -f "${user_cron}" "${user_cron}.new" "${user_cron}.final"
+      log_event "LOW" "scheduler" "User cron entry installed for ${USER} (15-minute report)"
       echo "Scheduler installed via user crontab"
     else
       log_event "WARNING" "scheduler" "cron is not available; automatic scheduling could not be configured"
@@ -1034,9 +1076,9 @@ Options:
   --once           Run one complete inspection cycle and log any findings.
   --ship-elk       Run one inspection cycle, then ship new events to Elasticsearch.
   --email-report   Run inspection cycle and send an email report if EMAIL_TO is set.
-  --instant-check  Run one inspection cycle, ship to Elasticsearch if configured, and rely on the built-in instant alert only (no hourly summary email).
+  --instant-check  Run one inspection cycle and ship to Elasticsearch if configured, without sending email.
   --demo           Simulate an attack sequence that triggers log alerts.
-  --install-cron   Add recurring cron jobs: hourly full report plus a per-minute instant-alert scan.
+  --install-cron   Add a recurring cron job for a report every 15 minutes.
   --install-audit-rules  Install auditd watch rules (whoami/id/uname/find) for tamper-resistant
                          command detection, independent of shell history (requires root; run once).
   --help           Show this help menu.
@@ -1116,10 +1158,6 @@ run_checks() {
   check_privilege_activity
   generate_summary
 
-  # Automatically trigger instant email report if threshold met (HIGH >= 1 or MEDIUM >= 5)
-  if [ -n "${EMAIL_TO:-}" ]; then
-    send_email_after_scan --instant
-  fi
 }
 
 # Handles the command-line interface and dispatches the right action.
