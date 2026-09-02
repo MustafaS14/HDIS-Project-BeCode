@@ -526,17 +526,23 @@ fi
 echo "Sending HIDS report email to ${EMAIL_TO}..."
 
 if command -v curl >/dev/null 2>&1 && [ -n "${SMTP_USER}" ] && [ -n "${SMTP_PASS}" ]; then
+  CURL_ERROR_FILE="$(mktemp)"
   if curl --ssl-reqd -k \
     --url "smtp://${SMTP_SERVER}" \
     --user "${SMTP_USER}:${SMTP_PASS}" \
     --mail-from "${SMTP_USER}" \
     --mail-rcpt "${EMAIL_TO}" \
-    --upload-file "${PAYLOAD_FILE}" 2>/dev/null; then
+    --upload-file "${PAYLOAD_FILE}" 2>"${CURL_ERROR_FILE}"; then
     echo "Email report sent successfully via SMTP (${SMTP_SERVER})."
+    rm -f "${CURL_ERROR_FILE}"
     mark_minute_alerts_sent
     cleanup_report_files
     exit 0
   else
+    if [ -s "${CURL_ERROR_FILE}" ]; then
+      sed -e "s/${SMTP_PASS}/[SMTP_PASS]/g" -e "s/${SMTP_USER}/[SMTP_USER]/g" "${CURL_ERROR_FILE}" >&2
+    fi
+    rm -f "${CURL_ERROR_FILE}"
     echo "SMTP delivery failed with curl. Trying fallback mail command..." >&2
   fi
 fi
