@@ -47,7 +47,10 @@ hids/
 │   ├── fim.sh              # Module 4
 │   └── report.sh           # Module 5 summary/report
 ├── simulate_attack.sh      # demo + self-scoring
-├── elk_ship.sh             # existing, keep
+├── elk/
+│   ├── elk_ship.sh         # existing, keep
+│   ├── ingest_to_elastic.sh # reference helper
+│   └── elk_snippet_from_elk.sh
 ├── send_email_report.sh    # existing, keep
 ├── baseline/               # gitignored
 ├── logs/                   # gitignored
@@ -74,7 +77,7 @@ rule documents itself.
 {"timestamp":"2026-08-28T14:00:03Z","rule":"FIM-006","severity":"CRITICAL","module":"fim","host":"vm01","message":"...","evidence":"...","impact":"...","action":""}
 ```
 
-`elk_ship.sh` already ships this file line by line, so keeping one-object-per-line
+`elk/elk_ship.sh` already ships this file line by line, so keeping one-object-per-line
 is what makes ELK ingestion work. Do not break it.
 
 ---
@@ -393,7 +396,7 @@ CLI, dispatches, exits with `max_severity_exit_code`.
 --full           everything including SUID sweep and world-writable scan
 --report         run --once then print/write the summary
 --email-report   run --once then send_email_report.sh
---ship-elk       run --once then elk_ship.sh --once
+--ship-elk       run --once then elk/elk_ship.sh --once
 --simulate       run simulate_attack.sh then score detection
 --install-cron   install both schedules (see below)
 --help

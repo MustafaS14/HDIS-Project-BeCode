@@ -103,8 +103,8 @@ main() {
       ;;
     --ship-elk)
       run_once_checks
-      if [ -x "${PROJECT_ROOT}/elk_ship.sh" ]; then
-        "${PROJECT_ROOT}/elk_ship.sh" --once
+      if [ -x "${PROJECT_ROOT}/elk/elk_ship.sh" ]; then
+        "${PROJECT_ROOT}/elk/elk_ship.sh" --once
       fi
       max_severity_exit_code
       return $?

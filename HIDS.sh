@@ -134,8 +134,8 @@ module_user_activity() {
   fi
 }
 
-# Module 3: audits running processes and listening ports for suspicious or unauthorized activity.
-module_process_network() {
+# Module 3: performs a combined system audit of running processes and listening ports.
+module_system_audit() {
   local suspicious_processes=""
   local process_entry
   while IFS= read -r process_entry; do
@@ -151,9 +151,9 @@ module_process_network() {
   done < <(ps -eo comm --no-headers 2>/dev/null | sort -u)
 
   if [ -n "${suspicious_processes}" ]; then
-    log_event "MEDIUM" "process_network" "Suspicious running processes detected: ${suspicious_processes}"
+    log_event "MEDIUM" "system_audit" "Suspicious running processes detected: ${suspicious_processes}"
   else
-    log_event "LOW" "process_network" "No obviously suspicious processes detected"
+    log_event "LOW" "system_audit" "No obviously suspicious processes detected"
   fi
 
   local network_summary
@@ -166,9 +166,9 @@ module_process_network() {
   fi
 
   if [ -n "${network_summary}" ]; then
-    log_event "LOW" "process_network" "Current listeners: ${network_summary}"
+    log_event "LOW" "system_audit" "Current listeners: ${network_summary}"
   else
-    log_event "LOW" "process_network" "No network listeners identified by ss/netstat"
+    log_event "LOW" "system_audit" "No network listeners identified by ss/netstat"
   fi
 }
 
@@ -486,9 +486,9 @@ send_email_after_scan() {
   fi
 }
 
-# Runs one local scan and then ships new events to Elasticsearch using elk_ship.sh.
+# Runs one local scan and then ships new events to Elasticsearch using elk/elk_ship.sh.
 ship_after_scan() {
-  local ship_script="${PROJECT_ROOT}/elk_ship.sh"
+  local ship_script="${PROJECT_ROOT}/elk/elk_ship.sh"
 
   run_checks
 
@@ -530,7 +530,7 @@ run_checks() {
   module_system_health
   module_user_activity
   check_brute_force
-  module_process_network
+  module_system_audit
   check_file_integrity
   check_process_activity
   check_network_activity

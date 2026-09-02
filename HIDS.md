@@ -102,7 +102,7 @@ General verification notes
 
 What I did not change (you must verify or ask me to implement)
 - No detection modules were implemented yet; the SPEC was added and a checklist created.
-- I did not modify existing scripts like `elk_ship.sh` or `send_email_report.sh`.
+- I did not modify existing scripts like `send_email_report.sh`; ELK-related scripts now live under `elk/`.
 
 Next steps (I can take these if you want)
 - Implement `lib/util.sh` and `lib/alert.sh` (high priority).

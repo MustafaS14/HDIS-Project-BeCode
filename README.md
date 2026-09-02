@@ -10,7 +10,7 @@ Usage (entrypoint)
 - `./hids.sh --full`        : run everything including expensive SUID inventory
 - `./hids.sh --report`      : run `--once` then print/write a one-page summary
 - `./hids.sh --email-report`: run `--once` then call `send_email_report.sh` if present
-- `./hids.sh --ship-elk`    : run `--once` then call `elk_ship.sh --once`
+- `./hids.sh --ship-elk`    : run `--once` then call `elk/elk_ship.sh --once`
 - `./hids.sh --install-cron`: install cron entries for periodic runs
 
 Log format (JSONL)
@@ -65,8 +65,15 @@ Add the port number to `ALLOWED_LISTEN_PORTS` in `config/hids.conf`, e.g.:
 ALLOWED_LISTEN_PORTS="22 80 443 53 631 8888"
 ```
 
-ELK integration
-Use the included `elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
+ELK / Kibana files
+The ELK-related pieces live under `elk/` so it is easier to find the shipper, sample ingestion helpers, and the Kibana verification step:
+
+- `elk/elk_ship.sh` ships new JSONL alerts from `logs/hids.log` to Elasticsearch.
+- `elk/ingest_to_elastic.sh` is an alternate ingestion helper kept for reference.
+- `elk/elk_snippet_from_elk.sh` contains an example ELK-oriented shell snippet.
+- `Kibana` is used to create the API key and verify the `hids-alerts*` index pattern.
+
+Use `elk/elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
 
 1. Create an API key in Kibana and export:
 ```
@@ -74,7 +81,7 @@ export ELASTIC_URL="https://..."
 export ELASTIC_API_KEY="..."
 export ELASTIC_INDEX="hids-alerts"
 ```
-2. Run shipper: `./elk_ship.sh --once` or `./hids.sh --ship-elk`.
+2. Run shipper: `./elk/elk_ship.sh --once` or `./hids.sh --ship-elk`.
 3. Verify ingestion in Kibana with index pattern `hids-alerts*`.
 
 Simulation

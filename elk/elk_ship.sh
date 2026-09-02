@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+set -uo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="${PROJECT_ROOT}/.hids"
 LOG_FILE="${LOG_FILE:-${STATE_DIR}/hids.log}"
 OFFSET_FILE="${OFFSET_FILE:-${STATE_DIR}/elk_ship.offset}"
@@ -15,8 +14,8 @@ print_help() {
 HIDS -> Elasticsearch shipper (Bash + curl)
 
 Usage:
-  ./elk_ship.sh --once
-  ./elk_ship.sh --help
+  ./elk/elk_ship.sh --once
+  ./elk/elk_ship.sh --help
 
 Required environment variables:
   ELASTIC_URL      Example: https://my-deployment.es.region.gcp.elastic-cloud.com:443
