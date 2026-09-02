@@ -1289,7 +1289,7 @@ USAGE
 # Sends an email security report if send_email_report.sh is available.
 send_email_after_scan() {
   local email_script="${PROJECT_ROOT}/send_email_report.sh"
-  local mode="${1:---hourly}"
+  local mode="${1:---scheduled}"
   local lines_count="${2:-30}"
 
   if [ -f "${email_script}" ]; then
@@ -1326,7 +1326,7 @@ ship_after_scan() {
   fi
 
   if [ -n "${EMAIL_TO:-}" ]; then
-    send_email_after_scan --hourly
+    send_email_after_scan --scheduled
   fi
 }
 

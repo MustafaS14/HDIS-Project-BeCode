@@ -52,17 +52,18 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-# Determine mode and how many lines to inspect (default: --hourly 30)
-REPORT_MODE="hourly"
+# Determine mode and how many lines to inspect (default: scheduled report over 30 events)
+REPORT_MODE="scheduled"
 LINES_COUNT=30
+PENDING_EVENTS_FILE=""
 
 for arg in "$@"; do
   case "$arg" in
     --instant)
       REPORT_MODE="instant"
       ;;
-    --hourly)
-      REPORT_MODE="hourly"
+    --scheduled)
+      REPORT_MODE="scheduled"
       ;;
     --minute)
       REPORT_MODE="minute"
@@ -79,11 +80,11 @@ if [ ! -f "${LOG_FILE}" ]; then
 fi
 
 if [ "${REPORT_MODE}" = "instant" ]; then
-  echo "Instant alert email mode is disabled; hourly email reports are still active."
+  echo "Instant alert email mode is disabled; scheduled email reports are still active."
   exit 0
 fi
 
-# Extract recent log entries (rolling window shown in the email body/summary for both modes)
+# Extract recent log entries (rolling window shown in the email body/summary)
 RECENT_EVENTS="$(tail -n "${LINES_COUNT}" "${LOG_FILE}" 2>/dev/null || true)"
 
 if [ -z "${RECENT_EVENTS}" ]; then
@@ -112,7 +113,8 @@ if [ "${REPORT_MODE}" = "minute" ]; then
     LAST_SENT_ID=0
   fi
 
-  PENDING_EVENTS="$(awk -v last_id="${LAST_SENT_ID}" '
+  PENDING_EVENTS_FILE="${STATE_DIR}/email_pending_events.$$"
+  awk -v last_id="${LAST_SENT_ID}" '
     /"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"/ {
       line = $0
       sub(/^.*"id":"/, "", line)
@@ -120,16 +122,17 @@ if [ "${REPORT_MODE}" = "minute" ]; then
       id = line + 0
       if (id > last_id) print $0
     }
-  ' "${LOG_FILE}" 2>/dev/null || true)"
+  ' "${LOG_FILE}" > "${PENDING_EVENTS_FILE}" 2>/dev/null || true
 
-  if [ -z "${PENDING_EVENTS}" ]; then
+  if [ ! -s "${PENDING_EVENTS_FILE}" ]; then
+    rm -f "${PENDING_EVENTS_FILE}"
     echo "No new alert IDs found since $(printf '%06d' "${LAST_SENT_ID}"). Skipping email."
     exit 0
   fi
 
-  HIGH_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"HIGH"' 2>/dev/null || true)
-  MEDIUM_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"MEDIUM"' 2>/dev/null || true)
-  LOW_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"LOW"' 2>/dev/null || true)
+  HIGH_COUNT=$(grep -c '"severity":"HIGH"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
+  MEDIUM_COUNT=$(grep -c '"severity":"MEDIUM"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
+  LOW_COUNT=$(grep -c '"severity":"LOW"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
   HIGH_COUNT=$(echo "${HIGH_COUNT}" | tr -d '[:space:]')
   MEDIUM_COUNT=$(echo "${MEDIUM_COUNT}" | tr -d '[:space:]')
   LOW_COUNT=$(echo "${LOW_COUNT}" | tr -d '[:space:]')
@@ -139,13 +142,13 @@ if [ "${REPORT_MODE}" = "minute" ]; then
   TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
   if [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
+    rm -f "${PENDING_EVENTS_FILE}"
     echo "New alert IDs found, but thresholds not met (HIGH=${HIGH_COUNT}, MEDIUM=${MEDIUM_COUNT}). Skipping email."
     exit 0
   fi
 
-  RECENT_EVENTS="${PENDING_EVENTS}"
   LINES_COUNT="${TOTAL_COUNT}"
-  export HIDS_EMAIL_EVENTS="${RECENT_EVENTS}"
+  export HIDS_EMAIL_EVENTS_FILE="${PENDING_EVENTS_FILE}"
 fi
 
 # Scheduled Report Mode (sends regular report including when only LOW severities exist)
@@ -177,9 +180,10 @@ subject = sys.argv[8]
 payload_path = sys.argv[9]
 
 events = []
-raw_env = os.environ.get("HIDS_EMAIL_EVENTS", "")
-if raw_env:
-  raw_lines = raw_env.splitlines()
+events_file = os.environ.get("HIDS_EMAIL_EVENTS_FILE", "")
+if events_file and os.path.exists(events_file):
+  with open(events_file, "r", encoding="utf-8") as f:
+    raw_lines = f.readlines()
 elif os.path.exists(log_file):
     with open(log_file, "r", encoding="utf-8") as f:
         raw_lines = f.readlines()[-lines_count:]
@@ -318,7 +322,7 @@ def friendly_summary(module, severity, message):
     return FALLBACK_BY_SEVERITY.get(severity, "A security event was recorded — see details below.")
 
 def build_rows(event_list, border_color="#e2e8f0"):
-  if not event_list: return '<tr><td colspan="5" style="padding: 12px 14px; font-size: 12px; color: #64748b; font-style: italic;">No alerts in this category.</td></tr>'
+  if not event_list: return '<tr><td colspan="4" style="padding: 12px 14px; font-size: 12px; color: #64748b; font-style: italic;">No alerts in this category.</td></tr>'
   html_rows = []
   for ev in event_list:
     alert_id = html.escape(str(ev.get("id", "")))
@@ -331,13 +335,12 @@ def build_rows(event_list, border_color="#e2e8f0"):
     sev_bg, sev_color, sev_label = SEVERITY_BADGE_STYLE.get(ev.get("severity", "LOW"), SEVERITY_BADGE_STYLE["LOW"])
 
     row = f'''<tr>
-          <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #475569; white-space: nowrap; vertical-align: top;">{alert_id}</td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #64748b; white-space: nowrap; vertical-align: top;">{ts}</td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; vertical-align: top; white-space: nowrap;"><span style="font-weight: 700; font-size: 10px; background-color: {sev_bg}; color: {sev_color}; padding: 2px 7px; border-radius: 4px; display: inline-block;">{sev_label}</span></td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; vertical-align: top;"><span style="font-weight: 600; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 2px 7px; border-radius: 4px; color: #1e293b; display: inline-block;">{mod}</span></td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; font-size: 12px; color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.5; vertical-align: top;">
             <div style="font-weight: 600;">{plain_text}</div>
-            <div style="margin-top: 4px; font-size: 11px; color: #64748b; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">Details: {msg}</div>
+            <div style="margin-top: 4px; font-size: 11px; color: #64748b; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">Details: {msg} <strong style="color: #0f172a;">Alert ID: {alert_id}</strong></div>
           </td>
         </tr>'''
     html_rows.append(row)
@@ -353,7 +356,6 @@ def build_category_section(name, accent_color, event_list):
       </div>
       <table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
         <thead><tr style="background-color: #f8fafc; text-align: left;">
-          <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">ID</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Timestamp</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Severity</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Module</th>
@@ -485,12 +487,30 @@ with open(payload_path, "w", encoding="utf-8") as f:
     f.write(html_body)
 PYEOF
 
+cleanup_report_files() {
+  rm -f "${PAYLOAD_FILE}"
+  if [ -n "${PENDING_EVENTS_FILE:-}" ]; then
+    rm -f "${PENDING_EVENTS_FILE}"
+  fi
+}
+
+mark_minute_alerts_sent() {
+  [ "${REPORT_MODE}" = "minute" ] || return 0
+  [ -n "${PENDING_EVENTS_FILE:-}" ] && [ -f "${PENDING_EVENTS_FILE}" ] || return 0
+  local max_sent_id
+  max_sent_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${PENDING_EVENTS_FILE}" | sort -n | tail -n 1)"
+  if [ -n "${max_sent_id}" ]; then
+    mkdir -p "$(dirname "${SENT_ALERT_ID_FILE}")"
+    printf '%s\n' "$((10#${max_sent_id}))" > "${SENT_ALERT_ID_FILE}"
+  fi
+}
+
 # If EMAIL_TO is not set, output report preview to stdout
 if [ -z "${EMAIL_TO}" ]; then
   echo "EMAIL_TO is not configured. Displaying email report preview below:"
   echo ""
   cat "${PAYLOAD_FILE}"
-  rm -f "${PAYLOAD_FILE}"
+  cleanup_report_files
   exit 0
 fi
 
@@ -498,7 +518,7 @@ if [ "${HIDS_EMAIL_DRY_RUN:-false}" = "true" ]; then
   echo "HIDS_EMAIL_DRY_RUN=true; displaying email payload without sending."
   echo ""
   cat "${PAYLOAD_FILE}"
-  rm -f "${PAYLOAD_FILE}"
+  cleanup_report_files
   exit 0
 fi
 
@@ -513,7 +533,8 @@ if command -v curl >/dev/null 2>&1 && [ -n "${SMTP_USER}" ] && [ -n "${SMTP_PASS
     --mail-rcpt "${EMAIL_TO}" \
     --upload-file "${PAYLOAD_FILE}" 2>/dev/null; then
     echo "Email report sent successfully via SMTP (${SMTP_SERVER})."
-    rm -f "${PAYLOAD_FILE}"
+    mark_minute_alerts_sent
+    cleanup_report_files
     exit 0
   else
     echo "SMTP delivery failed with curl. Trying fallback mail command..." >&2
@@ -523,13 +544,18 @@ fi
 if command -v sendmail >/dev/null 2>&1; then
   sendmail -t < "${PAYLOAD_FILE}"
   echo "Email report sent successfully via sendmail."
+  mark_minute_alerts_sent
 elif command -v mail >/dev/null 2>&1; then
   mail -s "${SUBJECT}" "${EMAIL_TO}" < "${PAYLOAD_FILE}"
   echo "Email report sent successfully via mail command."
+  mark_minute_alerts_sent
 else
   echo "ERROR: Could not send email. Ensure SMTP_USER & SMTP_PASS are set for curl, or install sendmail/mailx." >&2
   echo "Report payload saved at: ${PAYLOAD_FILE}"
+  if [ -n "${PENDING_EVENTS_FILE:-}" ]; then
+    rm -f "${PENDING_EVENTS_FILE}"
+  fi
   exit 1
 fi
 
-rm -f "${PAYLOAD_FILE}"
+cleanup_report_files
