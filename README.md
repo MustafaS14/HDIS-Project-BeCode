@@ -13,6 +13,7 @@ The system continuously checks for signs of compromise or unauthorized change ac
 - **User and account monitoring** to detect suspicious account changes or privilege-related activity
 - **Process and network monitoring** to identify unusual executables, listeners, and suspicious ports
 - **Audit logging** through `auditd` to provide security-relevant system events
+- **One-minute cron scanning** with threshold-based email alerts that avoid duplicate inbox flooding
 - **Log shipping** to send collected telemetry to **Elastic Cloud Serverless** for dashboarding and analysis
 
 In short, the project helps answer: **What changed on the system, when did it change, and does that change look suspicious?**
@@ -38,8 +39,9 @@ The solution is organized around a master Bash script and several supporting com
   - `lib/rules.sh` defines rule IDs, severity, impact, and recommended response text
 
 - **Logs and telemetry output**
-  - `logs/hids.log` stores JSONL alerts
-  - `logs/hids-summary.txt` stores the human-readable report when generated
+  - `.hids/hids.log` stores the active JSONL alert log used by cron and email reports
+  - `.hids/summary.txt` stores the human-readable report when generated
+  - `.hids/email_last_sent_id` stores the newest alert ID already emailed by the one-minute scan
 
 - **Optional forwarders/integration scripts**
   - `elk_ship.sh` ships JSONL telemetry to Elastic Cloud Serverless
@@ -78,7 +80,7 @@ Choose one of the following depending on your demo environment:
 ### 3. Install required packages on Ubuntu
 ```bash
 sudo apt update
-sudo apt install -y openssh-server auditd
+sudo apt install -y openssh-server auditd curl
 ```
 
 ### 4. Enable required services
@@ -98,10 +100,53 @@ config/hids.conf
 
 Adjust thresholds, monitored files, allowed ports, and other whitelist values before baseline creation.
 
-### 6. Create the baseline
+### 6. Configure email alerts
+Create a private local email configuration file. Do not commit this file.
+
+```bash
+cp email_config.env.example email_config.env
+nano email_config.env
+```
+
+For Gmail SMTP, use a Google App Password for `SMTP_PASS`. If Google displays it in groups, remove the spaces before saving it:
+
+```bash
+export EMAIL_TO="recipient@example.com"
+export SMTP_USER="sender@gmail.com"
+export SMTP_PASS="abcdefghijklmnop"
+export SMTP_SERVER="smtp.gmail.com:587"
+```
+
+Check that the VM loads the value without printing the secret:
+
+```bash
+sudo bash -c 'cd /home/vboxuser/HDIS-Project-BeCode && set -a && . ./email_config.env && set +a && echo "SMTP_PASS length=${#SMTP_PASS}"'
+```
+
+### 7. Create the baseline
 Run the baseline step before starting monitoring:
 ```bash
 ./HIDS.sh --baseline
+```
+
+### 8. Install the one-minute Linux VM scan
+Install auditd rules for recon-command and HIDS-log tamper monitoring, then install the one-minute cron scan:
+
+```bash
+sudo ./HIDS.sh --install-audit-rules
+sudo ./HIDS.sh --install-cron
+```
+
+Verify the cron entry:
+
+```bash
+sudo cat /etc/cron.d/hids-monitor
+```
+
+Watch cron output:
+
+```bash
+tail -f .hids/cron.log
 ```
 
 ## Usage & Execution
@@ -110,7 +155,7 @@ Run the baseline step before starting monitoring:
   Create baselines for monitored files, users, and listeners.
 
 - `./HIDS.sh --once`  
-  Run the fast monitoring checks once and write alerts to `logs/hids.log`.
+  Run the fast monitoring checks once and write alerts to `.hids/hids.log`.
 
 - `./HIDS.sh --full`  
   Run all checks, including more expensive inventory-style scans such as SUID/SGID discovery.
@@ -130,6 +175,9 @@ Run the baseline step before starting monitoring:
 - `./HIDS.sh --install-cron`  
   On the Linux VM, install a cron entry that runs `./HIDS.sh --minute-scan` every minute. Repeated identical alerts keep their original ID and timestamp, so unchanged findings do not flood the email inbox.
 
+- `./HIDS.sh --migrate-log`  
+  Add alert IDs and hash-chain fields to existing `.hids/hids.log` entries.
+
 - `./HIDS.sh --verify-log`  
   Verify that alert IDs are still strictly increasing and that the alert hash chain has not been changed.
 
@@ -148,23 +196,56 @@ Use the master script as the recommended entrypoint for normal operation.
 Security telemetry is stored locally in structured log form and can be forwarded to Elastic Cloud Serverless for visualization.
 
 ### Local log format
-The project writes one JSON object per line in `logs/hids.log`.
+The active runtime writes one JSON object per line in `.hids/hids.log`.
 
-Typical fields include:
+Active `.hids/hids.log` entries include:
 - `id`
 - `prev_hash`
 - `event_hash`
 - `timestamp`
-- `rule`
 - `severity`
 - `module`
-- `host`
 - `message`
+
+Some module-based or forwarded alert formats may also include extra fields such as:
+- `rule`
+- `host`
 - `evidence`
 - `impact`
 - `action`
 
 On Linux, HIDS hardens the local `.hids/hids.log` file with restrictive permissions. When run as root and when the filesystem supports it, HIDS also applies append-only protection with `chattr +a`. Each alert includes a hash of its ID, timestamp, severity, module, message, and previous alert hash, so changing an old ID or timestamp breaks `./HIDS.sh --verify-log`. Running `sudo ./HIDS.sh --install-audit-rules` also adds an auditd watch for HIDS log write and attribute changes under the `hids_log_integrity` key.
+
+Alert IDs start at `000001` for readability and continue upward without a six-digit limit. After `999999`, the next ID is `1000000`.
+
+If an existing log was created before IDs were added, migrate it once:
+
+```bash
+sudo ./HIDS.sh --migrate-log
+./HIDS.sh --verify-log
+```
+
+If the log is already append-only, temporarily unlock it for migration:
+
+```bash
+sudo chattr -a .hids/hids.log
+sudo ./HIDS.sh --migrate-log
+sudo chattr +a .hids/hids.log
+```
+
+### Email alert behavior
+The one-minute scan sends email only when newly observed alert IDs meet one of these thresholds:
+
+- at least 1 new `HIGH` alert
+- at least 5 new `MEDIUM` alerts
+
+The email reporter stores the newest successfully emailed alert ID in `.hids/email_last_sent_id`. If the same alert IDs are seen again, no duplicate email is sent. Email rows show the alert ID in bold at the end of the `Details` text under the `What Happened` section.
+
+Test email manually with the same environment-loading style used by cron:
+
+```bash
+sudo bash -c 'cd /home/vboxuser/HDIS-Project-BeCode && set -a && . ./email_config.env && set +a && ./send_email_report.sh --scheduled 30'
+```
 
 ### Elastic integration flow
 1. The monitoring script generates JSONL alerts.
@@ -200,12 +281,20 @@ HDIS-Project-BeCode/
 ├── config/
 │   └── hids.conf
 ├── lib/
-│   └── rules.sh
-├── logs/
-│   ├── hids.log
-│   └── hids-summary.txt
+│   ├── alert.sh
+│   ├── config.sh
+│   ├── rules.sh
+│   └── util.sh
+├── modules/
+│   ├── fim.sh
+│   ├── health.sh
+│   ├── procnet.sh
+│   ├── report.sh
+│   └── users.sh
 └── .hids/
-    └── baselines/
+    ├── hids.log
+    ├── summary.txt
+    └── email_last_sent_id
 ```
 
 ## Evaluation Goals
@@ -226,6 +315,8 @@ The demo script can simulate suspicious activity so the project can be shown saf
 - If no alerts appear, confirm that the baseline was created first and that the monitored files or services have actually changed.
 - If Elastic ingestion fails, verify the API key, endpoint URL, and index name.
 - If cron-based execution does not run on the Linux VM, check that the cron service is enabled and that `./HIDS.sh --install-cron` installed the `* * * * *` entry correctly.
+- If email fails with `curl: (67) Login denied`, Gmail rejected the SMTP credentials. Generate a new Gmail App Password for the same account in `SMTP_USER` and save it without spaces in `email_config.env`.
+- If `.hids/hids.log` does not show `id`, `prev_hash`, and `event_hash`, pull the latest code and run `sudo ./HIDS.sh --migrate-log` on the VM.
 
 ## Exit Codes
 - `0`: clean or INFO-only
