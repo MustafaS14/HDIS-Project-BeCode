@@ -115,7 +115,7 @@ if [ "${REPORT_MODE}" = "minute" ]; then
 
   PENDING_EVENTS_FILE="${STATE_DIR}/email_pending_events.$$"
   awk -v last_id="${LAST_SENT_ID}" '
-    /"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"/ {
+    /"id":"[0-9][0-9]*"/ {
       line = $0
       sub(/^.*"id":"/, "", line)
       sub(/".*$/, "", line)
@@ -498,7 +498,7 @@ mark_minute_alerts_sent() {
   [ "${REPORT_MODE}" = "minute" ] || return 0
   [ -n "${PENDING_EVENTS_FILE:-}" ] && [ -f "${PENDING_EVENTS_FILE}" ] || return 0
   local max_sent_id
-  max_sent_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${PENDING_EVENTS_FILE}" | sort -n | tail -n 1)"
+  max_sent_id="$(sed -n 's/.*"id":"\([0-9][0-9]*\)".*/\1/p' "${PENDING_EVENTS_FILE}" | sort -n | tail -n 1)"
   if [ -n "${max_sent_id}" ]; then
     mkdir -p "$(dirname "${SENT_ALERT_ID_FILE}")"
     printf '%s\n' "$((10#${max_sent_id}))" > "${SENT_ALERT_ID_FILE}"

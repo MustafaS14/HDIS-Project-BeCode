@@ -147,7 +147,7 @@ last_event_hash() {
 # Adds monotonically increasing IDs to pre-existing log lines that do not have one.
 migrate_alert_ids() {
   [ -f "${LOG_FILE}" ] || return 0
-  if ! grep -vq '"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"' "${LOG_FILE}" 2>/dev/null && \
+  if ! grep -vq '"id":"[0-9][0-9]*"' "${LOG_FILE}" 2>/dev/null && \
     ! grep -vq '"event_hash":"[a-f0-9][a-f0-9]*"' "${LOG_FILE}" 2>/dev/null; then
     return 0
   fi
@@ -155,7 +155,7 @@ migrate_alert_ids() {
   local tmp_file next_id line existing_id max_existing_id chain_hash event_hash timestamp severity module json_message
   tmp_file="$(mktemp)"
   chain_hash="${ZERO_HASH}"
-  max_existing_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
+  max_existing_id="$(sed -n 's/.*"id":"\([0-9][0-9]*\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
   if [ -n "${max_existing_id}" ]; then
     next_id=$((10#${max_existing_id} + 1))
   else
@@ -163,9 +163,9 @@ migrate_alert_ids() {
   fi
   while IFS= read -r line || [ -n "${line}" ]; do
     [ -z "${line}" ] && continue
-    if printf '%s\n' "${line}" | grep -q '"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"'; then
+    if printf '%s\n' "${line}" | grep -q '"id":"[0-9][0-9]*"'; then
       printf '%s\n' "${line}" >> "${tmp_file}"
-      existing_id="$(printf '%s\n' "${line}" | sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p')"
+      existing_id="$(printf '%s\n' "${line}" | sed -n 's/.*"id":"\([0-9][0-9]*\)".*/\1/p')"
       existing_id=$((10#${existing_id}))
       if [ "${existing_id}" -ge "${next_id}" ]; then
         next_id=$((existing_id + 1))
@@ -192,10 +192,10 @@ migrate_alert_ids() {
   mv "${tmp_file}" "${LOG_FILE}"
 }
 
-# Returns the next six-digit alert ID for a newly observed alert.
+# Returns the next alert ID, padded to at least six digits for readability.
 next_alert_id() {
   local max_id
-  max_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
+  max_id="$(sed -n 's/.*"id":"\([0-9][0-9]*\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
   if [ -z "${max_id}" ]; then
     printf '%s' "000001"
   else
@@ -255,7 +255,7 @@ verify_log_integrity() {
     module="$(json_field_from_line module "${line}")"
     json_message="$(json_field_from_line message "${line}")"
 
-    if ! printf '%s' "${alert_id}" | grep -Eq '^[0-9]{6}$'; then
+    if ! printf '%s' "${alert_id}" | grep -Eq '^[0-9]+$'; then
       echo "Line ${line_number}: missing or invalid alert id" >&2
       failures=$((failures + 1))
       continue
@@ -1267,6 +1267,7 @@ Usage:
   ./HIDS.sh --demo
   ./HIDS.sh --install-cron
   ./HIDS.sh --install-audit-rules
+  ./HIDS.sh --migrate-log
   ./HIDS.sh --verify-log
   ./HIDS.sh --help
 
@@ -1281,6 +1282,7 @@ Options:
   --install-cron   Add a recurring cron job for a one-minute threshold email scan.
   --install-audit-rules  Install auditd watch rules for recon commands and HIDS log tamper
                          monitoring, independent of shell history (requires root; run once).
+  --migrate-log    Add alert IDs and hash-chain fields to existing hids.log entries.
   --verify-log     Verify alert IDs and the log hash chain for tampering.
   --help           Show this help menu.
 USAGE
@@ -1409,6 +1411,13 @@ main() {
       ;;
     --install-audit-rules)
       install_audit_rules
+      ;;
+    --migrate-log)
+      ensure_state_dir
+      unlock_log_for_maintenance
+      migrate_alert_ids
+      harden_log_file
+      echo "HIDS log migration complete. Existing entries now include IDs and hash-chain fields where possible."
       ;;
     --verify-log)
       verify_log_integrity
