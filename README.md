@@ -197,8 +197,8 @@ HDIS-Project-BeCode/
     └── baselines/
 ```
 
-## Notes for Evaluation
-This project is designed to show that a Bash-only HIDS can:
+## Evaluation Goals
+This project demonstrates that a Bash-only HIDS can:
 
 - create a baseline of trusted system state
 - detect deviations from that baseline
@@ -208,6 +208,13 @@ This project is designed to show that a Bash-only HIDS can:
 
 ## Demo Scenario
 The demo script can simulate suspicious activity so the project can be shown safely without requiring a real compromise. The simulated activity is intended to trigger file integrity or related alerts and demonstrate the response workflow end to end.
+
+## Troubleshooting & Operational Notes
+- If `ss`, `last`, or `auditd` are missing, verify the required packages are installed.
+- If the script cannot read certain system files, run it with the permissions expected by the project.
+- If no alerts appear, confirm that the baseline was created first and that the monitored files or services have actually changed.
+- If Elastic ingestion fails, verify the API key, endpoint URL, and index name.
+- If cron-based execution does not run, check that the cron service is enabled and that the entry was installed correctly.
 
 ## Exit Codes
 - `0`: clean or INFO-only
