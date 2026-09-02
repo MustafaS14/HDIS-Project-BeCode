@@ -10,6 +10,7 @@ set -o pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${PROJECT_ROOT}/.hids"
 LOG_FILE="${LOG_FILE:-${STATE_DIR}/hids.log}"
+SENT_ALERT_ID_FILE="${SENT_ALERT_ID_FILE:-${STATE_DIR}/email_last_sent_id}"
 HOSTNAME_STR="$(hostname 2>/dev/null || echo "host")"
 
 # Email Configuration (Environment Variables or defaults)
@@ -36,6 +37,7 @@ Optional Environment Variables:
   SMTP_SERVER          SMTP host and port (default: smtp.gmail.com:587)
   EMAIL_ONLY_ON_ALERTS Set to "true" to only send emails when HIGH or MEDIUM alerts exist (default: false)
   LOG_FILE             Path to hids.log (default: .hids/hids.log)
+  SENT_ALERT_ID_FILE   Stores the last emailed alert ID for one-minute scans
 
 Example:
   export EMAIL_TO="your.email@gmail.com"
@@ -61,6 +63,9 @@ for arg in "$@"; do
       ;;
     --hourly)
       REPORT_MODE="hourly"
+      ;;
+    --minute)
+      REPORT_MODE="minute"
       ;;
     [0-9]*)
       LINES_COUNT="$arg"
@@ -101,13 +106,59 @@ LOW_COUNT=${LOW_COUNT:-0}
 
 TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
+if [ "${REPORT_MODE}" = "minute" ]; then
+  LAST_SENT_ID="$(cat "${SENT_ALERT_ID_FILE}" 2>/dev/null || printf '%s' 0)"
+  if ! [[ "${LAST_SENT_ID}" =~ ^[0-9]+$ ]]; then
+    LAST_SENT_ID=0
+  fi
+
+  PENDING_EVENTS="$(awk -v last_id="${LAST_SENT_ID}" '
+    /"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"/ {
+      line = $0
+      sub(/^.*"id":"/, "", line)
+      sub(/".*$/, "", line)
+      id = line + 0
+      if (id > last_id) print $0
+    }
+  ' "${LOG_FILE}" 2>/dev/null || true)"
+
+  if [ -z "${PENDING_EVENTS}" ]; then
+    echo "No new alert IDs found since $(printf '%06d' "${LAST_SENT_ID}"). Skipping email."
+    exit 0
+  fi
+
+  HIGH_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"HIGH"' 2>/dev/null || true)
+  MEDIUM_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"MEDIUM"' 2>/dev/null || true)
+  LOW_COUNT=$(printf '%s\n' "${PENDING_EVENTS}" | grep -c '"severity":"LOW"' 2>/dev/null || true)
+  HIGH_COUNT=$(echo "${HIGH_COUNT}" | tr -d '[:space:]')
+  MEDIUM_COUNT=$(echo "${MEDIUM_COUNT}" | tr -d '[:space:]')
+  LOW_COUNT=$(echo "${LOW_COUNT}" | tr -d '[:space:]')
+  HIGH_COUNT=${HIGH_COUNT:-0}
+  MEDIUM_COUNT=${MEDIUM_COUNT:-0}
+  LOW_COUNT=${LOW_COUNT:-0}
+  TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+
+  if [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
+    echo "New alert IDs found, but thresholds not met (HIGH=${HIGH_COUNT}, MEDIUM=${MEDIUM_COUNT}). Skipping email."
+    exit 0
+  fi
+
+  RECENT_EVENTS="${PENDING_EVENTS}"
+  LINES_COUNT="${TOTAL_COUNT}"
+  export HIDS_EMAIL_EVENTS="${RECENT_EVENTS}"
+fi
+
 # Scheduled Report Mode (sends regular report including when only LOW severities exist)
 if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
   echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
   exit 0
 fi
 STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-SUBJECT="[HIDS 15-Minute Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+if [ "${REPORT_MODE}" = "minute" ]; then
+  SUBJECT="[HIDS Alert] ${HOSTNAME_STR} New Security Alert IDs - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+else
+  SUBJECT="[HIDS Scheduled Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+fi
 
 # Build professional HTML email payload file
 PAYLOAD_FILE="$(mktemp)"
@@ -126,17 +177,23 @@ subject = sys.argv[8]
 payload_path = sys.argv[9]
 
 events = []
-if os.path.exists(log_file):
+raw_env = os.environ.get("HIDS_EMAIL_EVENTS", "")
+if raw_env:
+  raw_lines = raw_env.splitlines()
+elif os.path.exists(log_file):
     with open(log_file, "r", encoding="utf-8") as f:
         raw_lines = f.readlines()[-lines_count:]
-    for line in raw_lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except Exception:
-            pass
+else:
+  raw_lines = []
+
+for line in raw_lines:
+  line = line.strip()
+  if not line:
+    continue
+  try:
+    events.append(json.loads(line))
+  except Exception:
+    pass
 
 high_events = [e for e in events if e.get("severity") == "HIGH"]
 medium_events = [e for e in events if e.get("severity") == "MEDIUM"]
@@ -261,19 +318,20 @@ def friendly_summary(module, severity, message):
     return FALLBACK_BY_SEVERITY.get(severity, "A security event was recorded — see details below.")
 
 def build_rows(event_list, border_color="#e2e8f0"):
-    if not event_list:
-        return f'<tr><td colspan="4" style="padding: 12px 14px; font-size: 12px; color: #64748b; font-style: italic;">No alerts in this category.</td></tr>'
-    html_rows = []
-    for ev in event_list:
-        ts = html.escape(str(ev.get("timestamp", "")))
-        mod_raw = str(ev.get("module", ""))
-        mod = html.escape(mod_raw)
-        raw_message = str(ev.get("message", ""))
-        plain_text = html.escape(friendly_summary(mod_raw, ev.get("severity", "LOW"), raw_message))
-        msg = html.escape(raw_message).replace("\n", "<br/>").replace("  ", "&nbsp;&nbsp;")
-        sev_bg, sev_color, sev_label = SEVERITY_BADGE_STYLE.get(ev.get("severity", "LOW"), SEVERITY_BADGE_STYLE["LOW"])
+  if not event_list: return '<tr><td colspan="5" style="padding: 12px 14px; font-size: 12px; color: #64748b; font-style: italic;">No alerts in this category.</td></tr>'
+  html_rows = []
+  for ev in event_list:
+    alert_id = html.escape(str(ev.get("id", "")))
+    ts = html.escape(str(ev.get("timestamp", "")))
+    mod_raw = str(ev.get("module", ""))
+    mod = html.escape(mod_raw)
+    raw_message = str(ev.get("message", ""))
+    plain_text = html.escape(friendly_summary(mod_raw, ev.get("severity", "LOW"), raw_message))
+    msg = html.escape(raw_message).replace("\n", "<br/>").replace("  ", "&nbsp;&nbsp;")
+    sev_bg, sev_color, sev_label = SEVERITY_BADGE_STYLE.get(ev.get("severity", "LOW"), SEVERITY_BADGE_STYLE["LOW"])
 
-        row = f'''<tr>
+    row = f'''<tr>
+          <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #475569; white-space: nowrap; vertical-align: top;">{alert_id}</td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; color: #64748b; white-space: nowrap; vertical-align: top;">{ts}</td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; vertical-align: top; white-space: nowrap;"><span style="font-weight: 700; font-size: 10px; background-color: {sev_bg}; color: {sev_color}; padding: 2px 7px; border-radius: 4px; display: inline-block;">{sev_label}</span></td>
           <td style="padding: 10px 14px; border-bottom: 1px solid {border_color}; vertical-align: top;"><span style="font-weight: 600; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 2px 7px; border-radius: 4px; color: #1e293b; display: inline-block;">{mod}</span></td>
@@ -282,8 +340,8 @@ def build_rows(event_list, border_color="#e2e8f0"):
             <div style="margin-top: 4px; font-size: 11px; color: #64748b; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">Details: {msg}</div>
           </td>
         </tr>'''
-        html_rows.append(row)
-    return "\n".join(html_rows)
+    html_rows.append(row)
+  return "\n".join(html_rows)
 
 def build_category_section(name, accent_color, event_list):
     if not event_list:
@@ -295,6 +353,7 @@ def build_category_section(name, accent_color, event_list):
       </div>
       <table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse: collapse; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
         <thead><tr style="background-color: #f8fafc; text-align: left;">
+          <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">ID</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Timestamp</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Severity</th>
           <th style="padding: 10px 14px; font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;">Module</th>

@@ -154,7 +154,7 @@ main() {
       ;;
     --run|*)
       run_attack_steps
-      bash "${PROJECT_ROOT}/hids.sh" --once >/dev/null 2>&1 || true
+      bash "${PROJECT_ROOT}/HIDS.sh" --once >/dev/null 2>&1 || true
       score_detection
       ;;
   esac

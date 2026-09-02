@@ -68,12 +68,12 @@ What to verify per SPEC task
 - Quick checks:
   - `bash -c 'source modules/fim.sh || true; run_fim_module || true'` (without `--full` by default)
 
-**Task 9 — hids.sh orchestrator**
-- File: hids.sh (top-level)
+**Task 9 — HIDS.sh orchestrator**
+- File: HIDS.sh (top-level)
 - Requirements: CLI flags, source `lib/*.sh` and `modules/*.sh`, dispatch, exit with `max_severity_exit_code`.
 - Quick checks:
-  - `bash hids.sh --help`
-  - `bash hids.sh --once` then `echo $?` should return an exit code as per severities.
+  - `bash HIDS.sh --help`
+  - `bash HIDS.sh --once` then `echo $?` should return an exit code as per severities.
 
 **Task 10 — modules/report.sh**
 - File: modules/report.sh
@@ -106,7 +106,7 @@ What I did not change (you must verify or ask me to implement)
 
 Next steps (I can take these if you want)
 - Implement `lib/util.sh` and `lib/alert.sh` (high priority).
-- Implement `modules/health.sh` and basic `hids.sh` CLI to enable `--once` runs.
+- Implement `modules/health.sh` and basic `HIDS.sh` CLI to enable `--once` runs.
 
 If you want me to proceed, tell me which Task to implement first (recommended: Task 1 `lib/util.sh`).
 

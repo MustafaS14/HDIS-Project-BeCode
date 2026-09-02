@@ -32,7 +32,7 @@ first. One event = one line. Always.
 
 ```
 hids/
-├── hids.sh                 # orchestrator + CLI only, no detection logic
+├── HIDS.sh                 # orchestrator + CLI only, no detection logic
 ├── config/
 │   └── hids.conf           # thresholds, whitelists, paths
 ├── lib/
@@ -378,11 +378,12 @@ FIM-014 instead, so a tool installed on an already-compromised host leaves a
 record.
 
 **Performance:** `find / -xdev` takes seconds to minutes. Gate it behind
-`--full` and run that hourly; run everything else every 15 minutes.
+`--full`; the default scheduled scan runs every minute and only sends email
+when new alert IDs meet the configured severity thresholds.
 
 ---
 
-## Task 9 — `hids.sh` orchestrator (30 min)
+## Task 9 — `HIDS.sh` orchestrator (30 min)
 
 Contains **no detection logic**. Sources `lib/*.sh` then `modules/*.sh`, parses
 CLI, dispatches, exits with `max_severity_exit_code`.
@@ -393,17 +394,18 @@ CLI, dispatches, exits with `max_severity_exit_code`.
 --full           everything including SUID sweep and world-writable scan
 --report         run --once then print/write the summary
 --email-report   run --once then send_email_report.sh
+--minute-scan    run --once-style checks and email only for new alert IDs above thresholds
 --ship-elk       run --once then elk_ship.sh --once
 --simulate       run simulate_attack.sh then score detection
---install-cron   install both schedules (see below)
+--install-cron   install the one-minute Linux cron schedule (see below)
+--verify-log     verify alert IDs and the alert hash chain
 --help
 ```
 
-Cron install writes two entries:
+Cron install writes one Linux VM entry:
 
 ```
-*/15 * * * * <path>/hids.sh --once   >/dev/null 2>&1
-0    * * * * <path>/hids.sh --full   >/dev/null 2>&1
+* * * * * <path>/HIDS.sh --minute-scan >/dev/null 2>&1
 ```
 
 ---

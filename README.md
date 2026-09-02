@@ -20,7 +20,7 @@ In short, the project helps answer: **What changed on the system, when did it ch
 ## Architecture & Components
 The solution is organized around a master Bash script and several supporting components:
 
-- **`hids.sh`**
+- **`HIDS.sh`**
   - Main entrypoint for the project
   - Runs baseline collection, monitoring routines, report generation, and optional shipping tasks
 
@@ -101,31 +101,37 @@ Adjust thresholds, monitored files, allowed ports, and other whitelist values be
 ### 6. Create the baseline
 Run the baseline step before starting monitoring:
 ```bash
-./hids.sh --baseline
+./HIDS.sh --baseline
 ```
 
 ## Usage & Execution
 ### Main commands
-- `./hids.sh --baseline`  
+- `./HIDS.sh --baseline`
   Create baselines for monitored files, users, and listeners.
 
-- `./hids.sh --once`  
+- `./HIDS.sh --once`  
   Run the fast monitoring checks once and write alerts to `logs/hids.log`.
 
-- `./hids.sh --full`  
+- `./HIDS.sh --full`  
   Run all checks, including more expensive inventory-style scans such as SUID/SGID discovery.
 
-- `./hids.sh --report`  
+- `./HIDS.sh --report`  
   Run the monitoring checks and generate a short summary report.
 
-- `./hids.sh --email-report`  
+- `./HIDS.sh --email-report`  
   Run the checks and send the report by email if `send_email_report.sh` is available.
 
-- `./hids.sh --ship-elk`  
+- `./HIDS.sh --ship-elk`  
   Run the checks and ship alerts to Elastic Cloud Serverless using the log forwarder.
 
-- `./hids.sh --install-cron`  
-  Install cron scheduling so the checks run automatically.
+- `./HIDS.sh --minute-scan`  
+  Run one scan and send email only when new alert IDs meet the threshold: at least 1 `HIGH` alert or at least 5 `MEDIUM` alerts.
+
+- `./HIDS.sh --install-cron`  
+  On the Linux VM, install a cron entry that runs `./HIDS.sh --minute-scan` every minute. Repeated identical alerts keep their original ID and timestamp, so unchanged findings do not flood the email inbox.
+
+- `./HIDS.sh --verify-log`  
+  Verify that alert IDs are still strictly increasing and that the alert hash chain has not been changed.
 
 ### Triggering individual modules
 If your implementation exposes module-specific entrypoints, you can run them directly for testing or evaluation. Typical examples include:
@@ -145,6 +151,9 @@ Security telemetry is stored locally in structured log form and can be forwarded
 The project writes one JSON object per line in `logs/hids.log`.
 
 Typical fields include:
+- `id`
+- `prev_hash`
+- `event_hash`
 - `timestamp`
 - `rule`
 - `severity`
@@ -154,6 +163,8 @@ Typical fields include:
 - `evidence`
 - `impact`
 - `action`
+
+On Linux, HIDS hardens the local `.hids/hids.log` file with restrictive permissions. When run as root and when the filesystem supports it, HIDS also applies append-only protection with `chattr +a`. Each alert includes a hash of its ID, timestamp, severity, module, message, and previous alert hash, so changing an old ID or timestamp breaks `./HIDS.sh --verify-log`. Running `sudo ./HIDS.sh --install-audit-rules` also adds an auditd watch for HIDS log write and attribute changes under the `hids_log_integrity` key.
 
 ### Elastic integration flow
 1. The monitoring script generates JSONL alerts.
@@ -172,7 +183,7 @@ Then run:
 ```bash
 ./elk_ship.sh --once
 # or
-./hids.sh --ship-elk
+./HIDS.sh --ship-elk
 ```
 
 ## Project Structure
@@ -182,7 +193,7 @@ A typical repository layout is shown below:
 HDIS-Project-BeCode/
 ├── README.md
 ├── research.md
-├── hids.sh
+├── HIDS.sh
 ├── simulate_attack.sh
 ├── elk_ship.sh
 ├── send_email_report.sh
@@ -214,7 +225,7 @@ The demo script can simulate suspicious activity so the project can be shown saf
 - If the script cannot read certain system files, run it with the permissions expected by the project.
 - If no alerts appear, confirm that the baseline was created first and that the monitored files or services have actually changed.
 - If Elastic ingestion fails, verify the API key, endpoint URL, and index name.
-- If cron-based execution does not run, check that the cron service is enabled and that the entry was installed correctly.
+- If cron-based execution does not run on the Linux VM, check that the cron service is enabled and that `./HIDS.sh --install-cron` installed the `* * * * *` entry correctly.
 
 ## Exit Codes
 - `0`: clean or INFO-only

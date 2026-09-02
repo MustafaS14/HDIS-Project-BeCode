@@ -9,6 +9,7 @@ LOG_FILE="${STATE_DIR}/hids.log"
 BASELINE_DIR="${STATE_DIR}/baseline"
 DEMO_FILE="${STATE_DIR}/demo_target.txt"
 SUSPICIOUS_PORT="8888"
+ZERO_HASH="0000000000000000000000000000000000000000000000000000000000000000"
 CRITICAL_FILES=(
   "${DEMO_FILE}"
   "/etc/passwd"
@@ -69,6 +70,7 @@ SYSTEM_PROCESS_DIR_REGEX='^/(usr/)?s?bin/|^/usr/lib/systemd/|^/lib/systemd/|^/us
 # history settings, shell type, or whether the user/attacker flushes history at all.
 AUDIT_LOG="/var/log/audit/audit.log"
 AUDIT_RULE_KEY="hids_recon"
+AUDIT_LOG_RULE_KEY="hids_log_integrity"
 AUDIT_RULE_FILE="/etc/audit/rules.d/60-hids-recon.rules"
 
 # Creates the project state directories used by the HIDS to store logs and baselines.
@@ -77,20 +79,212 @@ ensure_state_dir() {
   touch "${LOG_FILE}"
 }
 
+# Removes append-only protection temporarily so HIDS itself can migrate old log records.
+unlock_log_for_maintenance() {
+  [ "${HIDS_LOG_APPEND_ONLY:-true}" = "true" ] || return 0
+  [ "$(id -u 2>/dev/null || echo 1)" -eq 0 ] || return 0
+  command -v chattr >/dev/null 2>&1 || return 0
+  [ -f "${LOG_FILE}" ] || return 0
+  chattr -a "${LOG_FILE}" 2>/dev/null || true
+}
+
+# Hardens the local alert log against non-root modification on Linux.
+harden_log_file() {
+  [ -f "${LOG_FILE}" ] || return 0
+  chmod 0600 "${LOG_FILE}" 2>/dev/null || true
+  if [ "$(id -u 2>/dev/null || echo 1)" -eq 0 ]; then
+    chown root:root "${LOG_FILE}" 2>/dev/null || true
+    if [ "${HIDS_LOG_APPEND_ONLY:-true}" = "true" ] && command -v chattr >/dev/null 2>&1; then
+      chattr +a "${LOG_FILE}" 2>/dev/null || true
+    fi
+  fi
+}
+
+# Escapes a string for JSON output in the legacy HIDS log format.
+json_escape_field() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "${value}"
+}
+
+# Extracts a simple JSON string field from one HIDS JSONL event.
+json_field_from_line() {
+  local field="${1:-}"
+  local line="${2:-}"
+  if [ "${field}" = "message" ]; then
+    printf '%s\n' "${line}" | sed -n 's/.*"message":"\(.*\)"}$/\1/p'
+    return 0
+  fi
+  printf '%s\n' "${line}" | sed -n 's/.*"'"${field}"'":"\([^"]*\)".*/\1/p'
+}
+
+# Hashes one alert's ID, original timestamp, severity, module, message, and previous hash.
+alert_event_hash() {
+  local alert_id="${1:-}"
+  local timestamp="${2:-}"
+  local severity="${3:-}"
+  local module="${4:-}"
+  local json_message="${5:-}"
+  local prev_hash="${6:-${ZERO_HASH}}"
+  printf '%s' "${alert_id}|${timestamp}|${severity}|${module}|${json_message}|${prev_hash}" | sha256sum | awk '{print $1}'
+}
+
+# Returns the latest hash-chain tip from the log.
+last_event_hash() {
+  local hash
+  hash="$(sed -n 's/.*"event_hash":"\([a-f0-9][a-f0-9]*\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | tail -n 1)"
+  if [ -n "${hash}" ]; then
+    printf '%s' "${hash}"
+  else
+    printf '%s' "${ZERO_HASH}"
+  fi
+}
+
+# Adds monotonically increasing IDs to pre-existing log lines that do not have one.
+migrate_alert_ids() {
+  [ -f "${LOG_FILE}" ] || return 0
+  if ! grep -vq '"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"' "${LOG_FILE}" 2>/dev/null && \
+    ! grep -vq '"event_hash":"[a-f0-9][a-f0-9]*"' "${LOG_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  local tmp_file next_id line existing_id max_existing_id chain_hash event_hash timestamp severity module json_message
+  tmp_file="$(mktemp)"
+  chain_hash="${ZERO_HASH}"
+  max_existing_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
+  if [ -n "${max_existing_id}" ]; then
+    next_id=$((10#${max_existing_id} + 1))
+  else
+    next_id=1
+  fi
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    if printf '%s\n' "${line}" | grep -q '"id":"[0-9][0-9][0-9][0-9][0-9][0-9]"'; then
+      printf '%s\n' "${line}" >> "${tmp_file}"
+      existing_id="$(printf '%s\n' "${line}" | sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p')"
+      existing_id=$((10#${existing_id}))
+      if [ "${existing_id}" -ge "${next_id}" ]; then
+        next_id=$((existing_id + 1))
+      fi
+    else
+      printf '%s\n' "${line}" | sed "s/^{/{\"id\":\"$(printf '%06d' "${next_id}")\",/" >> "${tmp_file}"
+      line="$(tail -n 1 "${tmp_file}")"
+      next_id=$((next_id + 1))
+    fi
+    if printf '%s\n' "${line}" | grep -q '"event_hash":"[a-f0-9][a-f0-9]*"'; then
+      chain_hash="$(json_field_from_line event_hash "${line}")"
+    else
+      existing_id="$(json_field_from_line id "${line}")"
+      timestamp="$(json_field_from_line timestamp "${line}")"
+      severity="$(json_field_from_line severity "${line}")"
+      module="$(json_field_from_line module "${line}")"
+      json_message="$(json_field_from_line message "${line}")"
+      event_hash="$(alert_event_hash "${existing_id}" "${timestamp}" "${severity}" "${module}" "${json_message}" "${chain_hash}")"
+      sed -i '$d' "${tmp_file}"
+      printf '%s\n' "${line}" | sed "s/\"id\":\"${existing_id}\"/\"id\":\"${existing_id}\",\"prev_hash\":\"${chain_hash}\",\"event_hash\":\"${event_hash}\"/" >> "${tmp_file}"
+      chain_hash="${event_hash}"
+    fi
+  done < "${LOG_FILE}"
+  mv "${tmp_file}" "${LOG_FILE}"
+}
+
+# Returns the next six-digit alert ID for a newly observed alert.
+next_alert_id() {
+  local max_id
+  max_id="$(sed -n 's/.*"id":"\([0-9][0-9][0-9][0-9][0-9][0-9]\)".*/\1/p' "${LOG_FILE}" 2>/dev/null | sort -n | tail -n 1)"
+  if [ -z "${max_id}" ]; then
+    printf '%s' "000001"
+  else
+    printf '%06d' "$((10#${max_id} + 1))"
+  fi
+}
+
+# Returns success when the same alert has already been logged, preserving its original ID/timestamp.
+alert_already_logged() {
+  local severity="${1:-}"
+  local module="${2:-}"
+  local json_message="${3:-}"
+  grep -F '"severity":"'"${severity}"'"' "${LOG_FILE}" 2>/dev/null | \
+    grep -F '"module":"'"${module}"'"' | \
+    grep -F '"message":"'"${json_message}"'"' >/dev/null 2>&1
+}
+
 # Records a timestamped alert in the persistent log file with severity and module metadata.
 log_event() {
   local severity="${1:-LOW}"
   local module="${2:-general}"
   local message="${3:-No message provided}"
+  ensure_state_dir
+  unlock_log_for_maintenance
+  migrate_alert_ids
+  harden_log_file
   local stamp
   stamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   local json_message
-  json_message="${message//\\/\\\\}"
-  json_message="${json_message//\"/\\\"}"
-  json_message="${json_message//$'\n'/\\n}"
-  json_message="${json_message//$'\r'/}"
-  json_message="${json_message//$'\t'/\\t}"
-  printf '{"timestamp":"%s","severity":"%s","module":"%s","message":"%s"}\n' "${stamp}" "${severity}" "${module}" "${json_message}" >> "${LOG_FILE}"
+  json_message="$(json_escape_field "${message}")"
+  if alert_already_logged "${severity}" "${module}" "${json_message}"; then
+    return 0
+  fi
+  local alert_id
+  alert_id="$(next_alert_id)"
+  local prev_hash event_hash
+  prev_hash="$(last_event_hash)"
+  event_hash="$(alert_event_hash "${alert_id}" "${stamp}" "${severity}" "${module}" "${json_message}" "${prev_hash}")"
+  printf '{"id":"%s","prev_hash":"%s","event_hash":"%s","timestamp":"%s","severity":"%s","module":"%s","message":"%s"}\n' "${alert_id}" "${prev_hash}" "${event_hash}" "${stamp}" "${severity}" "${module}" "${json_message}" >> "${LOG_FILE}"
+  harden_log_file
+}
+
+# Verifies alert IDs and the hash chain so tampering is visible during audits.
+verify_log_integrity() {
+  ensure_state_dir
+  local expected_prev="${ZERO_HASH}"
+  local line_number=0 failures=0 line alert_id prev_hash event_hash timestamp severity module json_message expected_hash previous_id=0 numeric_id
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    line_number=$((line_number + 1))
+    alert_id="$(json_field_from_line id "${line}")"
+    prev_hash="$(json_field_from_line prev_hash "${line}")"
+    event_hash="$(json_field_from_line event_hash "${line}")"
+    timestamp="$(json_field_from_line timestamp "${line}")"
+    severity="$(json_field_from_line severity "${line}")"
+    module="$(json_field_from_line module "${line}")"
+    json_message="$(json_field_from_line message "${line}")"
+
+    if ! printf '%s' "${alert_id}" | grep -Eq '^[0-9]{6}$'; then
+      echo "Line ${line_number}: missing or invalid alert id" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    numeric_id=$((10#${alert_id}))
+    if [ "${numeric_id}" -le "${previous_id}" ]; then
+      echo "Line ${line_number}: alert id ${alert_id} is not strictly increasing" >&2
+      failures=$((failures + 1))
+    fi
+    previous_id="${numeric_id}"
+
+    if [ "${prev_hash}" != "${expected_prev}" ]; then
+      echo "Line ${line_number}: previous hash mismatch for alert ${alert_id}" >&2
+      failures=$((failures + 1))
+    fi
+    expected_hash="$(alert_event_hash "${alert_id}" "${timestamp}" "${severity}" "${module}" "${json_message}" "${prev_hash}")"
+    if [ "${event_hash}" != "${expected_hash}" ]; then
+      echo "Line ${line_number}: event hash mismatch for alert ${alert_id}" >&2
+      failures=$((failures + 1))
+    fi
+    expected_prev="${event_hash}"
+  done < "${LOG_FILE}"
+
+  if [ "${failures}" -eq 0 ]; then
+    echo "HIDS log integrity verified: IDs and hash chain are intact."
+    return 0
+  fi
+  echo "HIDS log integrity verification failed with ${failures} issue(s)." >&2
+  return 1
 }
 
 # Module 1: checks if the system is currently healthy by reviewing CPU, memory, and disk usage.
@@ -470,8 +664,8 @@ list_persistence_targets() {
   } | sort -u
 }
 
-# Installs auditd watch rules on prohibited executables so their execution is logged by the
-# kernel in real time, regardless of shell history settings, shell type, or attacker cooperation.
+# Installs auditd watch rules on prohibited executables and the HIDS log so security-relevant
+# activity is logged by the kernel in real time, regardless of shell history settings.
 install_audit_rules() {
   if ! command -v auditctl >/dev/null 2>&1; then
     echo "auditd is not installed. Install it for tamper-resistant command detection (works even if a user disables shell history):"
@@ -485,6 +679,8 @@ install_audit_rules() {
   fi
 
   mkdir -p /etc/audit/rules.d
+  ensure_state_dir
+  harden_log_file
   : > "${AUDIT_RULE_FILE}"
   local watch_bin
   for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find /usr/bin/rm /bin/rm /usr/bin/shred /bin/shred /usr/bin/unlink /bin/unlink /usr/bin/truncate /bin/truncate; do
@@ -492,6 +688,7 @@ install_audit_rules() {
       printf -- '-w %s -p x -k %s\n' "${watch_bin}" "${AUDIT_RULE_KEY}" >> "${AUDIT_RULE_FILE}"
     fi
   done
+  printf -- '-w %s -p wa -k %s\n' "${LOG_FILE}" "${AUDIT_LOG_RULE_KEY}" >> "${AUDIT_RULE_FILE}"
 
   if command -v augenrules >/dev/null 2>&1; then
     augenrules --load >/dev/null 2>&1
@@ -500,8 +697,8 @@ install_audit_rules() {
   fi
   systemctl enable --now auditd >/dev/null 2>&1 || service auditd restart >/dev/null 2>&1 || true
 
-  log_event "LOW" "scheduler" "auditd execute-watch rules installed for recon and history-tampering executables (key=${AUDIT_RULE_KEY})"
-  echo "auditd rules installed. Prohibited command execution is now logged to ${AUDIT_LOG} in real time, independent of shell history."
+  log_event "LOW" "scheduler" "auditd rules installed for recon commands and HIDS log tamper monitoring (keys=${AUDIT_RULE_KEY},${AUDIT_LOG_RULE_KEY})"
+  echo "auditd rules installed. Recon command execution and HIDS log write/attribute changes are now logged to ${AUDIT_LOG}."
 }
 
 # Lists shell command history files to scan (bash history for all local users).
@@ -1010,7 +1207,7 @@ generate_summary() {
   log_event "LOW" "summary" "Summary report generated at ${summary_file}"
 }
 
-# Installs a cron entry so the HIDS runs automatically every 15 minutes.
+# Installs a cron entry so the HIDS runs automatically every minute.
 install_scheduler() {
   ensure_state_dir
 
@@ -1020,11 +1217,11 @@ install_scheduler() {
       printf '%s\n' "SHELL=/bin/bash"
       printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
       printf '%s\n' ""
-      printf '%s\n' "# HIDS report (runs every 15 minutes)"
-      printf '*/15 * * * * root bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
+      printf '%s\n' "# HIDS one-minute scan with threshold-based email alerts"
+      printf '* * * * * root bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --minute-scan >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
     } > "${cron_file}"
     chmod 0644 "${cron_file}"
-    log_event "LOW" "scheduler" "Cron job installed at ${cron_file} (15-minute report)"
+    log_event "LOW" "scheduler" "Cron job installed at ${cron_file} (one-minute scan)"
     echo "Scheduler installed at ${cron_file}"
   else
     if command -v crontab >/dev/null 2>&1; then
@@ -1040,13 +1237,13 @@ install_scheduler() {
       {
         cat "${user_cron}"
         printf '%s\n' ""
-        printf '%s\n' "# HIDS report (runs every 15 minutes)"
-        printf '*/15 * * * * bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
+        printf '%s\n' "# HIDS one-minute scan with threshold-based email alerts"
+        printf '* * * * * bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --minute-scan >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
       } > "${user_cron}.final"
       
       crontab "${user_cron}.final"
       rm -f "${user_cron}" "${user_cron}.new" "${user_cron}.final"
-      log_event "LOW" "scheduler" "User cron entry installed for ${USER} (15-minute report)"
+      log_event "LOW" "scheduler" "User cron entry installed for ${USER} (one-minute scan)"
       echo "Scheduler installed via user crontab"
     else
       log_event "WARNING" "scheduler" "cron is not available; automatic scheduling could not be configured"
@@ -1065,10 +1262,12 @@ Usage:
   ./HIDS.sh --once
   ./HIDS.sh --ship-elk
   ./HIDS.sh --email-report
+  ./HIDS.sh --minute-scan
   ./HIDS.sh --instant-check
   ./HIDS.sh --demo
   ./HIDS.sh --install-cron
   ./HIDS.sh --install-audit-rules
+  ./HIDS.sh --verify-log
   ./HIDS.sh --help
 
 Options:
@@ -1076,11 +1275,13 @@ Options:
   --once           Run one complete inspection cycle and log any findings.
   --ship-elk       Run one inspection cycle, then ship new events to Elasticsearch.
   --email-report   Run inspection cycle and send an email report if EMAIL_TO is set.
+  --minute-scan    Run one inspection cycle and email only for new alert IDs meeting thresholds.
   --instant-check  Run one inspection cycle and ship to Elasticsearch if configured, without sending email.
   --demo           Simulate an attack sequence that triggers log alerts.
-  --install-cron   Add a recurring cron job for a report every 15 minutes.
-  --install-audit-rules  Install auditd watch rules (whoami/id/uname/find) for tamper-resistant
-                         command detection, independent of shell history (requires root; run once).
+  --install-cron   Add a recurring cron job for a one-minute threshold email scan.
+  --install-audit-rules  Install auditd watch rules for recon commands and HIDS log tamper
+                         monitoring, independent of shell history (requires root; run once).
+  --verify-log     Verify alert IDs and the log hash chain for tampering.
   --help           Show this help menu.
 USAGE
 }
@@ -1089,9 +1290,10 @@ USAGE
 send_email_after_scan() {
   local email_script="${PROJECT_ROOT}/send_email_report.sh"
   local mode="${1:---hourly}"
+  local lines_count="${2:-30}"
 
   if [ -f "${email_script}" ]; then
-    bash "${email_script}" "${mode}" 30
+    bash "${email_script}" "${mode}" "${lines_count}"
   fi
 }
 
@@ -1181,6 +1383,13 @@ main() {
       run_checks
       send_email_after_scan
       ;;
+    --minute-scan)
+      run_checks
+      if [ -n "${EMAIL_TO:-}" ]; then
+        send_email_after_scan --minute 5000
+      fi
+      echo "HIDS one-minute scan complete. Results saved in ${LOG_FILE}"
+      ;;
     --instant-check)
       run_checks
       if [ -n "${ELASTIC_URL:-}" ] && [ -n "${ELASTIC_API_KEY:-}" ]; then
@@ -1200,6 +1409,9 @@ main() {
       ;;
     --install-audit-rules)
       install_audit_rules
+      ;;
+    --verify-log)
+      verify_log_integrity
       ;;
     --help|-h)
       print_help
