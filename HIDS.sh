@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# HIDS primary scheduled runner.
 set -u
 set -o pipefail
 
@@ -30,6 +31,9 @@ HEALTH_CPU_TEMP_C=80
 HEALTH_STATE_FILE="${STATE_DIR}/system_health.state"
 # Number of exceeded metrics required to escalate system_health severity from MEDIUM to HIGH.
 HEALTH_HIGH_SEVERITY_COUNT=3
+FAILED_LOGIN_WARN=5
+FAILED_LOGIN_CRIT=20
+FAILED_LOGIN_WINDOW_MIN=10
 SUSPICIOUS_PROCESS_NAMES=(
   "nc"
   "ncat"
@@ -46,6 +50,7 @@ SUSPICIOUS_PROCESS_NAMES=(
 USER_BEHAVIOR_STATE_DIR="${STATE_DIR}/user_behavior"
 RECON_COMMAND_REGEX='(^|[[:space:]/])(whoami|uname -a|uname[[:space:]]+-a)([[:space:]]|$)|(^|[[:space:]])id([[:space:]]|$)'
 SUID_SCAN_REGEX='find[[:space:]].*-perm[[:space:]]+.*(4000|u=s)'
+HISTORY_TAMPER_REGEX='(^|[[:space:];|])(history[[:space:]]+-[[:alnum:]]*[cwd][[:alnum:]]*|history[[:space:]]+--(clear|write|delete)|unset[[:space:]]+HIST[A-Z_]*|((export|declare|typeset)[[:space:]]+)?HIST(SIZE|FILESIZE)=0|HISTFILE=/dev/null|set[[:space:]]+\+o[[:space:]]+history|shopt[[:space:]]+-u[[:space:]]+(cmdhist|lithist)|(rm|shred|unlink|truncate)[[:space:]].*(~\/|/[^[:space:]]*/)?\.(bash|zsh|sh)_history|([:>][[:space:]]*|echo[[:space:]].*>[[:space:]]*).*(~\/|/[^[:space:]]*/)?\.(bash|zsh|sh)_history)([[:space:];|]|$)'
 AUTH_LOG_CANDIDATES=("/var/log/auth.log" "/var/log/secure")
 SUDO_SU_FREQUENCY_THRESHOLD=3
 SYSTEM_PROCESS_NAMES=(
@@ -356,6 +361,40 @@ module_system_health() {
   fi
 }
 
+# Collects recent failed login attempts from the sources commonly available on Linux VMs.
+collect_failed_login_events() {
+  local failures=""
+
+  if command -v lastb >/dev/null 2>&1; then
+    failures="$(lastb -n 20 -a -w 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' || true)"
+    if [ -n "${failures}" ]; then
+      printf '%s\n' "${failures}"
+      return 0
+    fi
+  fi
+
+  local auth_log
+  for auth_log in "${AUTH_LOG_CANDIDATES[@]}"; do
+    if [ -r "${auth_log}" ]; then
+      failures="$(grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' "${auth_log}" 2>/dev/null | tail -n 20 || true)"
+      if [ -n "${failures}" ]; then
+        printf '%s\n' "${failures}"
+        return 0
+      fi
+    fi
+  done
+
+  if command -v journalctl >/dev/null 2>&1; then
+    failures="$(journalctl -u ssh -u sshd -u ssh.service -u sshd.service --since "${FAILED_LOGIN_WINDOW_MIN} minutes ago" --no-pager 2>/dev/null | grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' | tail -n 20 || true)"
+    if [ -n "${failures}" ]; then
+      printf '%s\n' "${failures}"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 # Module 2: checks for current and recent user activity to spot abnormal logins or unexpected accounts.
 module_user_activity() {
   local current_users
@@ -363,7 +402,7 @@ module_user_activity() {
   local recent_logins
   recent_logins="$(last -n 10 2>/dev/null || true)"
   local failed_logins
-  failed_logins="$(lastb -n 10 2>/dev/null || true)"
+  failed_logins="$(collect_failed_login_events || true)"
 
   if [ -n "${current_users}" ]; then
     log_event "LOW" "user_activity" "Current active sessions: ${current_users}"
@@ -431,7 +470,7 @@ list_persistence_targets() {
   } | sort -u
 }
 
-# Installs auditd watch rules on whoami/id/uname/find so their execution is logged by the
+# Installs auditd watch rules on prohibited executables so their execution is logged by the
 # kernel in real time, regardless of shell history settings, shell type, or attacker cooperation.
 install_audit_rules() {
   if ! command -v auditctl >/dev/null 2>&1; then
@@ -448,7 +487,7 @@ install_audit_rules() {
   mkdir -p /etc/audit/rules.d
   : > "${AUDIT_RULE_FILE}"
   local watch_bin
-  for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find; do
+  for watch_bin in /usr/bin/whoami /bin/whoami /usr/bin/id /bin/id /usr/bin/uname /bin/uname /usr/bin/find /bin/find /usr/bin/rm /bin/rm /usr/bin/shred /bin/shred /usr/bin/unlink /bin/unlink /usr/bin/truncate /bin/truncate; do
     if [ -e "${watch_bin}" ]; then
       printf -- '-w %s -p x -k %s\n' "${watch_bin}" "${AUDIT_RULE_KEY}" >> "${AUDIT_RULE_FILE}"
     fi
@@ -461,8 +500,8 @@ install_audit_rules() {
   fi
   systemctl enable --now auditd >/dev/null 2>&1 || service auditd restart >/dev/null 2>&1 || true
 
-  log_event "LOW" "scheduler" "auditd execute-watch rules installed for whoami/id/uname/find (key=${AUDIT_RULE_KEY})"
-  echo "auditd rules installed. Execution of whoami/id/uname/find is now logged to ${AUDIT_LOG} in real time, independent of shell history."
+  log_event "LOW" "scheduler" "auditd execute-watch rules installed for recon and history-tampering executables (key=${AUDIT_RULE_KEY})"
+  echo "auditd rules installed. Prohibited command execution is now logged to ${AUDIT_LOG} in real time, independent of shell history."
 }
 
 # Lists shell command history files to scan (bash history for all local users).
@@ -474,15 +513,17 @@ list_shell_history_files() {
   } | sort -u
 }
 
-# Flags reconnaissance commands (whoami/id/uname -a/SUID scans) seen in running processes or new shell history lines.
+# Flags reconnaissance and history-tampering commands seen in running processes or new shell history lines.
 # Repeated identical commands within the same scan are collapsed into a single "Nx <command>" count.
 check_recon_commands() {
   local matched_lines=()
-  local proc_line
+  local fresh_command_matches=()
+  local proc_line observed_at
+  observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   while IFS= read -r proc_line; do
     [ -z "${proc_line}" ] && continue
-    if printf '%s' "${proc_line}" | grep -Eq "${RECON_COMMAND_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${SUID_SCAN_REGEX}"; then
-      matched_lines+=("${proc_line}")
+    if printf '%s' "${proc_line}" | grep -Eq "${RECON_COMMAND_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${SUID_SCAN_REGEX}" || printf '%s' "${proc_line}" | grep -Eq "${HISTORY_TAMPER_REGEX}"; then
+      matched_lines+=("[observed ${observed_at}] ${proc_line}")
     fi
   done < <(ps -eo command --no-headers 2>/dev/null)
 
@@ -497,20 +538,21 @@ check_recon_commands() {
     total_count="$(wc -l < "${hist_file}" 2>/dev/null || echo 0)"
     if [ "${total_count}" -gt "${last_count}" ]; then
       new_lines="$(tail -n +"$((last_count + 1))" "${hist_file}" 2>/dev/null)"
-      matched="$(printf '%s\n' "${new_lines}" | grep -E "${RECON_COMMAND_REGEX}|${SUID_SCAN_REGEX}" || true)"
+      matched="$(printf '%s\n' "${new_lines}" | grep -E "${RECON_COMMAND_REGEX}|${SUID_SCAN_REGEX}|${HISTORY_TAMPER_REGEX}" || true)"
       if [ -n "${matched}" ]; then
         while IFS= read -r matched_line; do
           [ -z "${matched_line}" ] && continue
-          matched_lines+=("${matched_line}")
+          matched_lines+=("[observed ${observed_at}] ${matched_line}")
+          fresh_command_matches+=("[observed ${observed_at}] ${matched_line}")
         done <<< "${matched}"
       fi
     fi
-    echo "${total_count}" > "${state_file}"
+    printf '%s\n' "${total_count}" > "${state_file}" 2>/dev/null || true
   done < <(list_shell_history_files)
 
   # auditd (if installed via --install-audit-rules) catches execution even if shell history is disabled.
   if [ -r "${AUDIT_LOG}" ]; then
-    local audit_key audit_state_file audit_last_offset audit_total_lines audit_new_lines audit_matches exe_path
+    local audit_key audit_state_file audit_last_offset audit_total_lines audit_new_lines audit_matches audit_line exe_path audit_command audit_target audit_timestamp
     audit_key="$(printf '%s' "${AUDIT_LOG}" | tr -c 'A-Za-z0-9' '_')"
     audit_state_file="${USER_BEHAVIOR_STATE_DIR}/audit_${audit_key}.offset"
     audit_last_offset=0
@@ -521,16 +563,31 @@ check_recon_commands() {
     fi
     if [ "${audit_total_lines}" -gt "${audit_last_offset}" ]; then
       audit_new_lines="$(tail -n +"$((audit_last_offset + 1))" "${AUDIT_LOG}" 2>/dev/null)"
-      audit_matches="$(printf '%s\n' "${audit_new_lines}" | grep -oE 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"' || true)"
+      audit_matches="$(printf '%s\n' "${audit_new_lines}" | grep -E 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"|type=EXECVE.*a0="(rm|shred|unlink|truncate)".*(\.bash_history|\.zsh_history|\.sh_history)' || true)"
       if [ -n "${audit_matches}" ]; then
-        while IFS= read -r exe_path; do
-          [ -z "${exe_path}" ] && continue
-          exe_path="$(printf '%s' "${exe_path}" | sed -E 's/^name="//; s/"$//')"
-          matched_lines+=("[audit-exec] ${exe_path}")
+        while IFS= read -r audit_line; do
+          [ -z "${audit_line}" ] && continue
+          exe_path="$(printf '%s\n' "${audit_line}" | grep -oE 'name="(/usr/bin/whoami|/bin/whoami|/usr/bin/id|/bin/id|/usr/bin/uname|/bin/uname|/usr/bin/find|/bin/find)"' | head -n 1 | sed -E 's/^name="//; s/"$//')"
+          if [ -z "${exe_path}" ]; then
+            audit_command="$(printf '%s\n' "${audit_line}" | sed -nE 's/.*a0="(rm|shred|unlink|truncate)".*/\1/p' | head -n 1)"
+            audit_target="$(printf '%s\n' "${audit_line}" | grep -oE '([^"[:space:]]*/|~/)?\.(bash|zsh|sh)_history' | head -n 1)"
+            if [ -z "${audit_command}" ] || [ -z "${audit_target}" ]; then
+              continue
+            fi
+            exe_path="${audit_command} ${audit_target}"
+          fi
+          audit_timestamp="$(printf '%s\n' "${audit_line}" | sed -nE 's/.*msg=audit\(([0-9]+)\.[0-9]+:[0-9]+\).*/\1/p' | head -n 1)"
+          if [ -n "${audit_timestamp}" ]; then
+            audit_timestamp="$(date -u -d "@${audit_timestamp}" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "${audit_timestamp}")"
+          else
+            audit_timestamp="${observed_at}"
+          fi
+          matched_lines+=("[audit-exec ${audit_timestamp}] ${exe_path}")
+          fresh_command_matches+=("[audit-exec ${audit_timestamp}] ${exe_path}")
         done <<< "${audit_matches}"
       fi
     fi
-    echo "${audit_total_lines}" > "${audit_state_file}"
+    printf '%s\n' "${audit_total_lines}" > "${audit_state_file}" 2>/dev/null || true
   fi
 
   if [ "${#matched_lines[@]}" -eq 0 ]; then
@@ -540,7 +597,10 @@ check_recon_commands() {
   local summary
   summary="$(printf '%s\n' "${matched_lines[@]}" | sort | uniq -c | awk '{count=$1; $1=""; sub(/^ /,""); printf "%dx %s; ", count, $0}')"
 
-  log_event "HIGH" "user_activity" "Reconnaissance command activity detected (whoami/id/uname -a/SUID scan): ${summary}"
+  log_event "HIGH" "user_activity" "Prohibited command activity detected (reconnaissance, SUID scan, or history tampering): ${summary}"
+  if [ "${#fresh_command_matches[@]}" -gt 0 ]; then
+    export HIDS_RECON_COMMAND_DETECTED=1
+  fi
   return 0
 }
 
@@ -565,7 +625,7 @@ check_privileged_command_frequency() {
     last_offset=0
   fi
   new_lines="$(tail -n +"$((last_offset + 1))" "${auth_log}" 2>/dev/null)"
-  echo "${total_lines}" > "${offset_file}"
+  printf '%s\n' "${total_lines}" > "${offset_file}" 2>/dev/null || true
   [ -z "${new_lines}" ] && return 1
 
   local sudo_lines
@@ -613,9 +673,9 @@ check_persistence_tampering() {
   done < "${BASELINE_DIR}/persistence_hashes.txt"
 
   local known_targets current_targets new_targets
-  known_targets="$(awk -F'\t' '{print $1}' "${BASELINE_DIR}/persistence_hashes.txt" | sort)"
+  known_targets="$(awk -F'\t' '{print $1}' "${BASELINE_DIR}/persistence_hashes.txt" | LC_ALL=C sort -u)"
   current_targets="$(list_persistence_targets)"
-  new_targets="$(comm -13 <(printf '%s\n' "${known_targets}") <(printf '%s\n' "${current_targets}" | sort))"
+  new_targets="$(comm -13 <(printf '%s\n' "${known_targets}" | LC_ALL=C sort -u) <(printf '%s\n' "${current_targets}" | LC_ALL=C sort -u))"
   if [ -n "${new_targets}" ]; then
     issues+="new persistence file(s): $(printf '%s' "${new_targets}" | tr '\n' ',' ); "
   fi
@@ -627,7 +687,7 @@ check_persistence_tampering() {
   return 1
 }
 
-# Flags shell history files that shrank dramatically since the last scan, a sign of history -c / deletion.
+# Flags any shell history file shrink since the last scan, a sign of history clearing or deletion.
 check_history_clearing() {
   local hist_file cleared=""
   for hist_file in /root/.bash_history /home/*/.bash_history; do
@@ -641,10 +701,10 @@ check_history_clearing() {
     else
       current_count=0
     fi
-    if [ "${last_count}" -gt 5 ] && [ "${current_count}" -lt $((last_count / 2)) ]; then
+    if [ "${last_count}" -gt "${current_count}" ]; then
       cleared+="${hist_file} (was ${last_count} lines, now ${current_count}); "
     fi
-    echo "${current_count}" > "${state_file}"
+    printf '%s\n' "${current_count}" > "${state_file}" 2>/dev/null || true
   done
 
   if [ -n "${cleared}" ]; then
@@ -777,7 +837,7 @@ check_process_activity() {
   local current_processes
   current_processes="$(ps -eo comm --no-headers 2>/dev/null | sort -u)"
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/processes.txt") <(printf '%s\n' "${current_processes}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/processes.txt") <(printf '%s\n' "${current_processes}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "process_monitor" "Unexpected new processes detected: ${delta}"
@@ -803,7 +863,7 @@ check_network_activity() {
   fi
 
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/network.txt") <(printf '%s\n' "${current_network}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/network.txt") <(printf '%s\n' "${current_network}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "HIGH" "network_monitor" "Unexpected network listener detected: ${delta}"
@@ -822,7 +882,7 @@ check_user_activity() {
   local current_users
   current_users="$(getent passwd 2>/dev/null | sort)"
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/users.txt") <(printf '%s\n' "${current_users}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/users.txt") <(printf '%s\n' "${current_users}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "MEDIUM" "user_monitor" "New user or account change detected: ${delta}"
@@ -846,7 +906,7 @@ check_privilege_activity() {
   fi
 
   local delta
-  delta="$(comm -13 <(sort "${BASELINE_DIR}/privileged.txt") <(printf '%s\n' "${current_privileged}" | sort))"
+  delta="$(comm -13 <(LC_ALL=C sort -u "${BASELINE_DIR}/privileged.txt") <(printf '%s\n' "${current_privileged}" | LC_ALL=C sort -u))"
 
   if [ -n "${delta}" ]; then
     log_event "HIGH" "privilege_monitor" "New privileged binary detected: ${delta}"
@@ -906,10 +966,10 @@ check_beaconing() {
 check_brute_force() {
   ensure_state_dir
 
-  local failed_count=0
-  if command -v lastb >/dev/null 2>&1; then
-    failed_count="$(lastb -n 20 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' | wc -l | tr -d ' ')"
-  fi
+  local failed_login_events failed_count
+  failed_login_events="$(collect_failed_login_events || true)"
+  failed_count="$(printf '%s\n' "${failed_login_events}" | grep -c . 2>/dev/null || true)"
+  failed_count="$(echo "${failed_count}" | tr -d ' ')"
 
   local active_login=""
   if command -v who >/dev/null 2>&1; then
@@ -950,38 +1010,43 @@ generate_summary() {
   log_event "LOW" "summary" "Summary report generated at ${summary_file}"
 }
 
-# Installs cron entries so the HIDS runs automatically: hourly full report plus a per-minute instant-alert scan.
+# Installs a cron entry so the HIDS runs automatically every 15 minutes.
 install_scheduler() {
   ensure_state_dir
 
-  # Source email_config.env if present so cron's minimal environment has EMAIL_TO/SMTP_*/ELASTIC_* vars.
-  local env_source="[ -f ${PROJECT_ROOT}/email_config.env ] && . ${PROJECT_ROOT}/email_config.env;"
-  local hourly_cmd="cd ${PROJECT_ROOT} && ${env_source} bash HIDS.sh --once >/dev/null 2>&1"
-  local instant_cmd="cd ${PROJECT_ROOT} && ${env_source} bash HIDS.sh --instant-check >/dev/null 2>&1"
-
   if [ "$(id -u)" -eq 0 ]; then
     local cron_file="/etc/cron.d/hids-monitor"
-    printf '%s\n' "SHELL=/bin/bash" > "${cron_file}"
-    printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "${cron_file}"
-    printf '0 * * * * root %s\n' "${hourly_cmd}" >> "${cron_file}"
-    printf '* * * * * root %s\n' "${instant_cmd}" >> "${cron_file}"
+    {
+      printf '%s\n' "SHELL=/bin/bash"
+      printf '%s\n' "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      printf '%s\n' ""
+      printf '%s\n' "# HIDS report (runs every 15 minutes)"
+      printf '*/15 * * * * root bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
+    } > "${cron_file}"
     chmod 0644 "${cron_file}"
-    log_event "LOW" "scheduler" "Cron jobs installed at ${cron_file} (hourly report + per-minute instant alerts)"
+    log_event "LOW" "scheduler" "Cron job installed at ${cron_file} (15-minute report)"
     echo "Scheduler installed at ${cron_file}"
   else
     if command -v crontab >/dev/null 2>&1; then
       local user_cron
       user_cron="$(mktemp)"
-      crontab -l 2>/dev/null > "${user_cron}"
-      if ! grep -Fq "HIDS.sh --once" "${user_cron}" 2>/dev/null; then
-        printf '0 * * * * %s\n' "${hourly_cmd}" >> "${user_cron}"
-      fi
-      if ! grep -Fq "HIDS.sh --instant-check" "${user_cron}" 2>/dev/null; then
-        printf '* * * * * %s\n' "${instant_cmd}" >> "${user_cron}"
-      fi
-      crontab "${user_cron}"
-      rm -f "${user_cron}"
-      log_event "LOW" "scheduler" "User cron entries installed for ${USER} (hourly report + per-minute instant alerts)"
+      crontab -l 2>/dev/null > "${user_cron}" || true
+      
+      # Remove any existing HIDS cron entries to avoid duplicates
+      grep -v "HIDS.sh" "${user_cron}" > "${user_cron}.new" 2>/dev/null || true
+      mv "${user_cron}.new" "${user_cron}"
+      
+      # Add fresh entries
+      {
+        cat "${user_cron}"
+        printf '%s\n' ""
+        printf '%s\n' "# HIDS report (runs every 15 minutes)"
+        printf '*/15 * * * * bash -c '"'"'cd %s && mkdir -p .hids && set -a && [ -f ./email_config.env ] && . ./email_config.env && set +a && ./HIDS.sh --once >> .hids/cron.log 2>&1'"'"'\n' "${PROJECT_ROOT}"
+      } > "${user_cron}.final"
+      
+      crontab "${user_cron}.final"
+      rm -f "${user_cron}" "${user_cron}.new" "${user_cron}.final"
+      log_event "LOW" "scheduler" "User cron entry installed for ${USER} (15-minute report)"
       echo "Scheduler installed via user crontab"
     else
       log_event "WARNING" "scheduler" "cron is not available; automatic scheduling could not be configured"
@@ -1011,9 +1076,9 @@ Options:
   --once           Run one complete inspection cycle and log any findings.
   --ship-elk       Run one inspection cycle, then ship new events to Elasticsearch.
   --email-report   Run inspection cycle and send an email report if EMAIL_TO is set.
-  --instant-check  Run one inspection cycle, ship to Elasticsearch if configured, and rely on the built-in instant alert only (no hourly summary email).
+  --instant-check  Run one inspection cycle and ship to Elasticsearch if configured, without sending email.
   --demo           Simulate an attack sequence that triggers log alerts.
-  --install-cron   Add recurring cron jobs: hourly full report plus a per-minute instant-alert scan.
+  --install-cron   Add a recurring cron job for a report every 15 minutes.
   --install-audit-rules  Install auditd watch rules (whoami/id/uname/find) for tamper-resistant
                          command detection, independent of shell history (requires root; run once).
   --help           Show this help menu.
@@ -1077,6 +1142,7 @@ run_demo() {
 # Runs the full check set in sequence: file integrity, process, network, user, privilege, unusual ports, beaconing, and brute force monitoring.
 run_checks() {
   ensure_state_dir
+  export HIDS_RECON_COMMAND_DETECTED=0
 
   module_system_health
   module_user_activity
@@ -1092,10 +1158,6 @@ run_checks() {
   check_privilege_activity
   generate_summary
 
-  # Automatically trigger instant email report if threshold met (HIGH >= 1 or MEDIUM >= 5)
-  if [ -n "${EMAIL_TO:-}" ]; then
-    send_email_after_scan --instant
-  fi
 }
 
 # Handles the command-line interface and dispatches the right action.

@@ -50,7 +50,28 @@ write_users_baseline() {
   fi
 }
 
-# Aggregates btmp failures by (user, source) within the configured window.
+# Collects failed SSH/login attempts from btmp, auth logs, or the systemd journal.
+collect_failed_login_lines() {
+  if command -v lastb >/dev/null 2>&1; then
+    lastb -a -w 2>/dev/null | grep -v '^$' | grep -v '^wtmp' | grep -v '^btmp' || true
+    return 0
+  fi
+
+  local auth_log
+  for auth_log in /var/log/auth.log /var/log/secure; do
+    if [ -r "${auth_log}" ]; then
+      grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' "${auth_log}" 2>/dev/null || true
+      return 0
+    fi
+  done
+
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u ssh -u sshd -u ssh.service -u sshd.service --since "${FAILED_LOGIN_WINDOW_MIN:-10} minutes ago" --no-pager 2>/dev/null \
+      | grep -Ei 'sshd.*(Failed password|Invalid user|authentication failure|Failed publickey)|authentication failure.*sshd' || true
+  fi
+}
+
+# Aggregates failed login attempts by (user, source) within the configured window.
 read_failed_logins() {
   local -A counts
   local -A users
@@ -61,13 +82,24 @@ read_failed_logins() {
     case "${line}" in
       btmp*|wtmp*|reboot*|shutdown*|"" ) continue ;;
     esac
-    user_name="$(printf '%s' "${line}" | awk '{print $1}')"
-    source="$(printf '%s' "${line}" | awk '{print $3}')"
+    if printf '%s' "${line}" | grep -Eq 'Failed password for '; then
+      user_name="$(printf '%s' "${line}" | sed -nE 's/.*Failed password for (invalid user )?([^ ]+) from .*/\2/p')"
+      source="$(printf '%s' "${line}" | sed -nE 's/.* from ([^ ]+) port .*/\1/p')"
+    elif printf '%s' "${line}" | grep -Eq 'Invalid user '; then
+      user_name="$(printf '%s' "${line}" | sed -nE 's/.*Invalid user ([^ ]+) from .*/\1/p')"
+      source="$(printf '%s' "${line}" | sed -nE 's/.* from ([^ ]+) port .*/\1/p')"
+    elif printf '%s' "${line}" | grep -Eq 'authentication failure'; then
+      user_name="$(printf '%s' "${line}" | sed -nE 's/.* user=([^ ]+).*/\1/p')"
+      source="$(printf '%s' "${line}" | sed -nE 's/.* rhost=([^ ]+).*/\1/p')"
+    else
+      user_name="$(printf '%s' "${line}" | awk '{print $1}')"
+      source="$(printf '%s' "${line}" | awk '{print $3}')"
+    fi
     [ -z "${user_name}" ] && continue
     [ -z "${source}" ] && source="unknown"
     counts["${user_name}|${source}"]=$(( ${counts["${user_name}|${source}"]:-0} + 1 ))
     users["${user_name}|${source}"]=1
-  done < <(lastb -a -w 2>/dev/null || true)
+  done < <(collect_failed_login_lines)
 
   local key count key_user key_source success_lines
   success_lines="$(last -a -w 2>/dev/null || true)"
@@ -90,14 +122,14 @@ read_failed_logins() {
 # Diffs getent passwd against baseline/users.txt.
 check_new_accounts() {
   local current_passwd baseline_passwd new_lines
-  current_passwd="$(getent passwd 2>/dev/null | sort)"
+  current_passwd="$(getent passwd 2>/dev/null | LC_ALL=C sort -u)"
   baseline_passwd="${BASELINE_DIR}/users.txt"
   if [ ! -f "${baseline_passwd}" ]; then
     write_users_baseline
     return 0
   fi
 
-  new_lines="$(comm -13 "${baseline_passwd}" <(printf '%s\n' "${current_passwd}" | sort))"
+  new_lines="$(comm -13 <(LC_ALL=C sort -u "${baseline_passwd}") <(printf '%s\n' "${current_passwd}" | LC_ALL=C sort -u))"
   if [ -n "${new_lines}" ]; then
     while IFS= read -r line; do
       [ -z "${line}" ] && continue

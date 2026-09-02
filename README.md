@@ -1,113 +1,226 @@
-# HIDS Bash Project
+# Host Intrusion Detection System (HIDS) Bash Project
 
-HIDS is a small host-based intrusion detection tool implemented in Bash. It runs regular lightweight checks (health, users, processes/net, and file integrity), records one-line JSON alerts to a log, and can produce a human summary for reporting.
+## Project Overview
+This project is a lightweight Host Intrusion Detection System (HIDS) written in Bash for Linux. It monitors a host for suspicious changes and activity, compares the current system state against a known-good baseline, and writes security telemetry to local log files for review or forwarding to Elastic Cloud Serverless.
 
-This repository follows the [SPEC contract](docs/SPEC.md): all detection is Bash-only and uses only standard Linux utilities (`awk`, `sed`, `grep`, `find`, `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `getent`, `df`, `crontab`, `hostname`, `ip`).
+The goal of the project is to demonstrate how a practical HIDS can be built using only native Linux utilities and Bash, without requiring a full SIEM stack on the monitored machine.
 
-## Repository Structure
+## What This Project Does
+The system continuously checks for signs of compromise or unauthorized change across several areas:
 
-- `README.md` — project overview, usage, configuration, and quick-start guidance.
-- `docs/` — supporting documentation, including the HIDS checklist, Kibana setup guide, and build specification.
-- `hids.sh` / `HIDS.sh` — HIDS entrypoint scripts.
-- `config/` — runtime configuration and detection thresholds.
-- `lib/` — shared Bash helpers for configuration, alerting, rules, and utilities.
-- `modules/` — detection and reporting modules.
-- `baseline/` — baseline snapshots used for file, listener, user, and group comparisons.
-- `logs/` — sample/runtime alert and summary output files.
-- `state/` — local runtime state such as suppression and simulation tracking.
-- `*.sh`, `*.ps1`, `*.json` — operational helpers and integration assets for email, ELK/Kibana, scheduling, and demos.
+- **File Integrity Monitoring (FIM)** using `sha256sum` to detect unexpected changes to critical files
+- **System health monitoring** to capture resource usage trends and abnormal conditions
+- **User and account monitoring** to detect suspicious account changes or privilege-related activity
+- **Process and network monitoring** to identify unusual executables, listeners, and suspicious ports
+- **Audit logging** through `auditd` to provide security-relevant system events
+- **Log shipping** to send collected telemetry to **Elastic Cloud Serverless** for dashboarding and analysis
 
-## Documentation
+In short, the project helps answer: **What changed on the system, when did it change, and does that change look suspicious?**
 
-- [Implementation checklist](docs/HIDS.md)
-- [Kibana setup guide](docs/KIBANA_SETUP.md)
-- [Build specification](docs/SPEC.md)
+## Architecture & Components
+The solution is organized around a master Bash script and several supporting components:
 
-## Usage (entrypoint)
-- `./hids.sh --baseline`    : write baselines for files, listeners, users (no alerts)
-- `./hids.sh --once`        : run the fast checks and write alerts to `logs/hids.log`
-- `./hids.sh --full`        : run everything including expensive SUID inventory
-- `./hids.sh --report`      : run `--once` then print/write a one-page summary
-- `./hids.sh --email-report`: run `--once` then call `send_email_report.sh` if present
-- `./hids.sh --ship-elk`    : run `--once` then call `elk_ship.sh --once`
-- `./hids.sh --install-cron`: install cron entries for periodic runs
+- **`hids.sh`**
+  - Main entrypoint for the project
+  - Runs baseline collection, monitoring routines, report generation, and optional shipping tasks
 
-## Log format (JSONL)
-Each alert is one JSON object per line in `logs/hids.log`. Fields:
+- **Monitoring modules**
+  - **File Integrity Monitoring**: hashes important files with `sha256sum` and compares results against the baseline
+  - **Health monitoring**: records key system health indicators such as CPU, memory, and load
+  - **User monitoring**: checks for account and privilege-related changes
+  - **Process / network monitoring**: detects suspicious processes and open listeners
+  - **Audit logging**: uses `auditd` on Ubuntu to capture security-relevant system events
 
- - `timestamp` : ISO 8601 UTC string
- - `rule`      : rule ID (e.g. `FIM-006`)
- - `severity`  : one of `INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
- - `module`    : module name (health, users, procnet, fim, etc.)
- - `host`      : hostname
- - `message`   : flattened, escaped message
- - `evidence`  : flattened, escaped evidence string
- - `impact`    : impact text from `lib/rules.sh`
- - `action`    : recommended action text from `lib/rules.sh`
+- **Configuration files**
+  - `config/hids.conf` holds thresholds, whitelists, and tuning options
 
-Example line:
-```
-{"timestamp":"2026-08-31T12:02:55Z","rule":"FIM-006","severity":"CRITICAL","module":"fim","host":"vm01","message":"New SUID binary /tmp/.x","evidence":"path=/tmp/.x sha256=...","impact":"A new SUID/SGID binary appeared.","action":"Inspect the binary and remove SUID bit if unauthorized."}
-```
+- **Rules and alert content**
+  - `lib/rules.sh` defines rule IDs, severity, impact, and recommended response text
 
-## Rules, impacts and actions
-The full rule list lives in `lib/rules.sh`. Brief highlights (impact → recommended action):
+- **Logs and telemetry output**
+  - `logs/hids.log` stores JSONL alerts
+  - `logs/hids-summary.txt` stores the human-readable report when generated
 
-- `USR-005`: An account with root-equivalent privileges was created. → Lock the account, inspect auth logs, review sudo history.
-- `FIM-006`: New SUID/SGID binary vs baseline. → Inspect and remove SUID/SGID if unauthorized.
-- `FIM-007`: SUID binary outside trusted dirs. → Treat as suspicious, isolate and investigate.
-- `PRC-001`: Process running from writable dir. → Quarantine and investigate process provenance.
-- `PRC-002`: Process executable deleted from disk. → Capture evidence from memory and investigate.
-- `PRC-004`: Bracketed kernel-style name with a real exe. → Inspect executable path vs. process name.
-- `PRC-005`: PID in `/proc` but missing from `ps`. → Capture evidence — possible hidden process.
-- `NET-001`: Listener on a non-whitelisted port. → Identify process and confirm service.
-- `NET-002`: Listener bound to `0.0.0.0` on non-whitelisted port. → Restrict or stop service.
-- `SYS-100`: Metrics snapshot (INFO). → Use for trend analysis.
+- **Optional forwarders/integration scripts**
+  - `elk_ship.sh` ships JSONL telemetry to Elastic Cloud Serverless
+  - `send_email_report.sh` can send reports by email if configured
+  - `simulate_attack.sh` provides a safe demo sequence for showing detections
 
-You can read full impact/action strings in `lib/rules.sh`.
+## Prerequisites & Environment
+This project is intended to run on a Linux host, specifically an **Ubuntu virtual machine in VirtualBox** for the capstone demo.
 
-## Configuration
-Edit `config/hids.conf` to change thresholds and whitelists. Example keys:
+### Required on the monitored machine
+- Ubuntu Linux VM
+- Bash
+- Standard Linux command-line utilities
+- `openssh-server`
+- `auditd`
+- Tools commonly used by the monitoring scripts such as `sha256sum`, `ps`, `ss`, `who`, `last`, `lastb`, `lastlog`, `find`, `awk`, `sed`, and `grep`
 
-- `CPU_PCT_WARN`, `LOAD_PER_CORE_WARN`, `LOAD_PER_CORE_CRIT`, `MEM_PCT_WARN`
-- `FAILED_LOGIN_WARN`, `FAILED_LOGIN_CRIT`, `PRIVILEGED_GROUPS`
-- `ALLOWED_LISTEN_PORTS`, `SUSPICIOUS_BINARIES`, `WRITABLE_EXEC_DIRS`
-- `FIM_TIER1`, `FIM_TIER2`, `FIM_TIER2_DIRS`
-- `SUPPRESS_WINDOW_LOW`, `SUPPRESS_WINDOW_HIGH`, `MAX_ALERTS_PER_RUN`
+### Recommended on the host machine
+- VirtualBox installed
+- A network configuration that allows the VM to reach the internet and/or the Elastic Cloud Serverless endpoint
+- Browser access for viewing the Elastic dashboard
 
-After editing `config/hids.conf`, re-run `./hids.sh --once` or restart scheduled runs.
-
-## Whitelisting a port
-Add the port number to `ALLOWED_LISTEN_PORTS` in `config/hids.conf`, e.g.:
-
-```
-ALLOWED_LISTEN_PORTS="22 80 443 53 631 8888"
+## Installation & Setup Instructions
+### 1. Clone the repository
+```bash
+git clone https://github.com/MustafaS14/HDIS-Project-BeCode.git
+cd HDIS-Project-BeCode
 ```
 
-## ELK integration
-Use the included `elk_ship.sh` to bulk ship new JSONL lines to Elasticsearch. Steps:
+### 2. Configure the VM network
+Choose one of the following depending on your demo environment:
 
-1. Create an API key in Kibana and export:
+- **Bridged Adapter**: gives the VM its own network presence on the LAN
+- **NAT**: simpler for internet access if you only need outbound connectivity
+
+### 3. Install required packages on Ubuntu
+```bash
+sudo apt update
+sudo apt install -y openssh-server auditd
 ```
+
+### 4. Enable required services
+```bash
+sudo systemctl enable ssh
+sudo systemctl start ssh
+
+sudo systemctl enable auditd
+sudo systemctl start auditd
+```
+
+### 5. Review configuration
+Edit the main configuration file as needed:
+```bash
+config/hids.conf
+```
+
+Adjust thresholds, monitored files, allowed ports, and other whitelist values before baseline creation.
+
+### 6. Create the baseline
+Run the baseline step before starting monitoring:
+```bash
+./hids.sh --baseline
+```
+
+## Usage & Execution
+### Main commands
+- `./hids.sh --baseline`  
+  Create baselines for monitored files, users, and listeners.
+
+- `./hids.sh --once`  
+  Run the fast monitoring checks once and write alerts to `logs/hids.log`.
+
+- `./hids.sh --full`  
+  Run all checks, including more expensive inventory-style scans such as SUID/SGID discovery.
+
+- `./hids.sh --report`  
+  Run the monitoring checks and generate a short summary report.
+
+- `./hids.sh --email-report`  
+  Run the checks and send the report by email if `send_email_report.sh` is available.
+
+- `./hids.sh --ship-elk`  
+  Run the checks and ship alerts to Elastic Cloud Serverless using the log forwarder.
+
+- `./hids.sh --install-cron`  
+  Install cron scheduling so the checks run automatically.
+
+### Triggering individual modules
+If your implementation exposes module-specific entrypoints, you can run them directly for testing or evaluation. Typical examples include:
+
+- file integrity checks
+- health checks
+- user/account checks
+- process/network checks
+- audit log review
+
+Use the master script as the recommended entrypoint for normal operation.
+
+## Dashboard & SIEM Integration
+Security telemetry is stored locally in structured log form and can be forwarded to Elastic Cloud Serverless for visualization.
+
+### Local log format
+The project writes one JSON object per line in `logs/hids.log`.
+
+Typical fields include:
+- `timestamp`
+- `rule`
+- `severity`
+- `module`
+- `host`
+- `message`
+- `evidence`
+- `impact`
+- `action`
+
+### Elastic integration flow
+1. The monitoring script generates JSONL alerts.
+2. The forwarder reads new log entries.
+3. Alerts are shipped to **Elastic Cloud Serverless**.
+4. Dashboards in Kibana can then visualize trends, repeated alerts, and high-severity findings.
+
+### Example Elastic setup
+```bash
 export ELASTIC_URL="https://..."
 export ELASTIC_API_KEY="..."
 export ELASTIC_INDEX="hids-alerts"
 ```
-2. Run shipper: `./elk_ship.sh --once` or `./hids.sh --ship-elk`.
-3. Verify ingestion in Kibana with index pattern `hids-alerts*`.
 
-## Simulation
-The demo script `simulate_attack.sh` performs a sequence of actions to exercise detections. It refuses to run unless you set `HIDS_SIMULATE_OK=1` in the environment to avoid accidental destructive changes. It records created files and PIDs under `state/` and supports `--cleanup` to try to revert changes.
+Then run:
+```bash
+./elk_ship.sh --once
+# or
+./hids.sh --ship-elk
+```
 
-## Exit codes
+## Project Structure
+A typical repository layout is shown below:
+
+```text
+HDIS-Project-BeCode/
+├── README.md
+├── research.md
+├── hids.sh
+├── simulate_attack.sh
+├── elk_ship.sh
+├── send_email_report.sh
+├── config/
+│   └── hids.conf
+├── lib/
+│   └── rules.sh
+├── logs/
+│   ├── hids.log
+│   └── hids-summary.txt
+└── .hids/
+    └── baselines/
+```
+
+## Evaluation Goals
+This project demonstrates that a Bash-only HIDS can:
+
+- create a baseline of trusted system state
+- detect deviations from that baseline
+- record meaningful security telemetry
+- support automated execution with cron
+- integrate with Elastic Cloud Serverless for dashboarding
+
+## Demo Scenario
+The demo script can simulate suspicious activity so the project can be shown safely without requiring a real compromise. The simulated activity is intended to trigger file integrity or related alerts and demonstrate the response workflow end to end.
+
+## Troubleshooting & Operational Notes
+- If `ss`, `last`, or `auditd` are missing, verify the required packages are installed.
+- If the script cannot read certain system files, run it with the permissions expected by the project.
+- If no alerts appear, confirm that the baseline was created first and that the monitored files or services have actually changed.
+- If Elastic ingestion fails, verify the API key, endpoint URL, and index name.
+- If cron-based execution does not run, check that the cron service is enabled and that the entry was installed correctly.
+
+## Exit Codes
 - `0`: clean or INFO-only
 - `1`: LOW/MEDIUM alerts present
 - `2`: HIGH alerts present
 - `3`: CRITICAL alerts present
 
-## Where to start
-1. `./hids.sh --baseline` — create baselines (quiet)
-2. `./hids.sh --once` — run fast checks and write alerts to `logs/hids.log`
-3. `./hids.sh --report` — generate a human summary in `logs/hids-summary.txt`
-
-If you want, I can expand the README with examples of reading `logs/hids.log` with `jq`, or add a `CONTRIBUTING.md` with development notes.
+## Summary
+This HIDS project monitors a Linux system for suspicious changes in files, users, processes, network listeners, and system health. It uses a baseline-driven approach, writes structured alerts to local logs, and can forward telemetry to Elastic Cloud Serverless for visual analysis and reporting.
