@@ -1,17 +1,17 @@
-HIDS Implementation Checklist
+# HIDS Implementation Checklist
 
-Summary
-- I added `SPEC.md` to the repository root to keep the contract in-repo.
+## Summary
+- I added `SPEC.md` under `docs/` to keep the contract in-repo.
 - This file (`HIDS.md`) maps SPEC tasks to the files to create and the exact
   verification commands you should run.
 
-Status overview (what I changed)
-- SPEC.md: placed at repository root (see file).
-- HIDS.md: this checklist created.
+## Status overview (what I changed)
+- SPEC.md: placed under `docs/` (see file).
+- HIDS.md: this checklist created under `docs/`.
 - No detection code has been implemented yet; I refrained from modifying
   existing scripts to avoid accidental system changes.
 
-What to verify per SPEC task
+## What to verify per SPEC task
 
 **Task 1 — lib/util.sh**
 - File: lib/util.sh
@@ -93,31 +93,30 @@ What to verify per SPEC task
 - Quick checks:
   - Open README.md and verify the required sections are present.
 
-General verification notes
+## General verification notes
 - Log format: each `raise_alert` must append one JSON object per line to `logs/hids.log`.
   Verify with: `tail -n 5 logs/hids.log` — each line must parse as JSON.
 - All functions must have a one-line `#` comment above them.
   Use `grep -n "^function\|() {" -n` or visually inspect files under `lib/` and `modules/`.
 - Shell options: each script must begin with `#!/usr/bin/env bash` and `set -uo pipefail`.
 
-What I did not change (you must verify or ask me to implement)
+## What I did not change (you must verify or ask me to implement)
 - No detection modules were implemented yet; the SPEC was added and a checklist created.
 - I did not modify existing scripts like `elk_ship.sh` or `send_email_report.sh`.
 
-Next steps (I can take these if you want)
+## Next steps (I can take these if you want)
 - Implement `lib/util.sh` and `lib/alert.sh` (high priority).
 - Implement `modules/health.sh` and basic `hids.sh` CLI to enable `--once` runs.
 
 If you want me to proceed, tell me which Task to implement first (recommended: Task 1 `lib/util.sh`).
 
 
-Repository files I created/modified
+## Repository files I created/modified
 - [SPEC.md](SPEC.md)
 - [HIDS.md](HIDS.md)
 
 
-Where to look in the repo now
+## Where to look in the repo now
 - SPEC text: [SPEC.md](SPEC.md)
 - Checklist: [HIDS.md](HIDS.md)
-
 
