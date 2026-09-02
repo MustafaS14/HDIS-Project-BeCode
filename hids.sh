@@ -103,9 +103,12 @@ main() {
       ;;
     --ship-elk)
       run_once_checks
-      if [ -x "${PROJECT_ROOT}/elk/elk_ship.sh" ]; then
-        "${PROJECT_ROOT}/elk/elk_ship.sh" --once
+      local shipper="${PROJECT_ROOT}/elk/elk_ship.sh"
+      if [ ! -x "${shipper}" ]; then
+        printf 'ELK shipper not found or not executable: %s\n' "${shipper}" >&2
+        return 1
       fi
+      "${shipper}" --once || return 1
       max_severity_exit_code
       return $?
       ;;
