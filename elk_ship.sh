@@ -31,7 +31,7 @@ USAGE
 
 ensure_state() {
   mkdir -p "${STATE_DIR}"
-  touch "${LOG_FILE}"
+  [ -e "${LOG_FILE}" ] || touch "${LOG_FILE}"
   if [ ! -f "${OFFSET_FILE}" ]; then
     echo "0" > "${OFFSET_FILE}"
   fi

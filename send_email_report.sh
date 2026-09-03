@@ -19,6 +19,7 @@ SMTP_SERVER="${SMTP_SERVER:-smtp.gmail.com:587}"
 SMTP_USER="${SMTP_USER:-}"
 SMTP_PASS="${SMTP_PASS:-}"
 EMAIL_ONLY_ON_ALERTS="${EMAIL_ONLY_ON_ALERTS:-false}"
+MAX_EMAIL_EVENTS="${MAX_EMAIL_EVENTS:-100}"
 
 print_help() {
   cat <<'USAGE'
@@ -149,6 +150,9 @@ if [ "${REPORT_MODE}" = "minute" ]; then
   fi
 
   LINES_COUNT="${TOTAL_COUNT}"
+  if [ "${LINES_COUNT}" -gt "${MAX_EMAIL_EVENTS}" ]; then
+    LINES_COUNT="${MAX_EMAIL_EVENTS}"
+  fi
   export HIDS_EMAIL_EVENTS_FILE="${PENDING_EVENTS_FILE}"
 fi
 
@@ -186,7 +190,7 @@ events = []
 events_file = os.environ.get("HIDS_EMAIL_EVENTS_FILE", "")
 if events_file and os.path.exists(events_file):
   with open(events_file, "r", encoding="utf-8") as f:
-    raw_lines = f.readlines()
+    raw_lines = f.readlines()[-lines_count:]
 elif os.path.exists(log_file):
     with open(log_file, "r", encoding="utf-8") as f:
         raw_lines = f.readlines()[-lines_count:]

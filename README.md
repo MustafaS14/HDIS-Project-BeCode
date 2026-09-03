@@ -170,7 +170,7 @@ tail -f .hids/cron.log
   Run the checks and ship alerts to Elastic Cloud Serverless using the log forwarder.
 
 - `./HIDS.sh --minute-scan`  
-  Run one scan and send email only when new alert IDs meet the threshold: at least 1 `HIGH` alert or at least 5 `MEDIUM` alerts.
+  Run one scan every minute when installed by cron, send email only when new alert IDs meet the threshold, and ship newly recorded events to Elasticsearch when `ELASTIC_URL` and `ELASTIC_API_KEY` are configured.
 
 - `./HIDS.sh --install-cron`  
   On the Linux VM, install a cron entry that runs `./HIDS.sh --minute-scan` every minute. Repeated identical alerts keep their original ID and timestamp, so unchanged findings do not flood the email inbox.

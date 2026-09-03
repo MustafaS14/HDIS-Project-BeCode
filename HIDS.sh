@@ -88,7 +88,7 @@ AUDIT_RULE_FILE="/etc/audit/rules.d/60-hids-recon.rules"
 # Creates the project state directories used by the HIDS to store logs and baselines.
 ensure_state_dir() {
   mkdir -p "${STATE_DIR}" "${BASELINE_DIR}" "${USER_BEHAVIOR_STATE_DIR}"
-  touch "${LOG_FILE}"
+  [ -e "${LOG_FILE}" ] || touch "${LOG_FILE}"
 }
 
 # Removes append-only protection temporarily so HIDS itself can migrate old log records.
@@ -233,7 +233,6 @@ log_event() {
   ensure_state_dir
   unlock_log_for_maintenance
   migrate_alert_ids
-  harden_log_file
   local stamp
   stamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
   local json_message
@@ -1401,6 +1400,9 @@ main() {
       run_checks
       if [ -n "${EMAIL_TO:-}" ]; then
         send_email_after_scan --minute 5000
+      fi
+      if [ -n "${ELASTIC_URL:-}" ] && [ -n "${ELASTIC_API_KEY:-}" ]; then
+        ship_events_to_elk || true
       fi
       echo "HIDS one-minute scan complete. Results saved in ${LOG_FILE}"
       ;;
