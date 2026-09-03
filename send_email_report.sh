@@ -93,19 +93,22 @@ if [ -z "${RECENT_EVENTS}" ]; then
 fi
 
 # Count alert severities (safely parse integer counts under pipefail)
+CRITICAL_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"CRITICAL"' 2>/dev/null || true)
 HIGH_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"HIGH"' 2>/dev/null || true)
 MEDIUM_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"MEDIUM"' 2>/dev/null || true)
 LOW_COUNT=$(printf '%s\n' "${RECENT_EVENTS}" | grep -c '"severity":"LOW"' 2>/dev/null || true)
 
+CRITICAL_COUNT=$(echo "${CRITICAL_COUNT}" | tr -d '[:space:]')
 HIGH_COUNT=$(echo "${HIGH_COUNT}" | tr -d '[:space:]')
 MEDIUM_COUNT=$(echo "${MEDIUM_COUNT}" | tr -d '[:space:]')
 LOW_COUNT=$(echo "${LOW_COUNT}" | tr -d '[:space:]')
 
+CRITICAL_COUNT=${CRITICAL_COUNT:-0}
 HIGH_COUNT=${HIGH_COUNT:-0}
 MEDIUM_COUNT=${MEDIUM_COUNT:-0}
 LOW_COUNT=${LOW_COUNT:-0}
 
-TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+TOTAL_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
 if [ "${REPORT_MODE}" = "minute" ]; then
   LAST_SENT_ID="$(cat "${SENT_ALERT_ID_FILE}" 2>/dev/null || printf '%s' 0)"
@@ -130,20 +133,23 @@ if [ "${REPORT_MODE}" = "minute" ]; then
     exit 0
   fi
 
+  CRITICAL_COUNT=$(grep -c '"severity":"CRITICAL"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
   HIGH_COUNT=$(grep -c '"severity":"HIGH"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
   MEDIUM_COUNT=$(grep -c '"severity":"MEDIUM"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
   LOW_COUNT=$(grep -c '"severity":"LOW"' "${PENDING_EVENTS_FILE}" 2>/dev/null || true)
+  CRITICAL_COUNT=$(echo "${CRITICAL_COUNT}" | tr -d '[:space:]')
   HIGH_COUNT=$(echo "${HIGH_COUNT}" | tr -d '[:space:]')
   MEDIUM_COUNT=$(echo "${MEDIUM_COUNT}" | tr -d '[:space:]')
   LOW_COUNT=$(echo "${LOW_COUNT}" | tr -d '[:space:]')
+  CRITICAL_COUNT=${CRITICAL_COUNT:-0}
   HIGH_COUNT=${HIGH_COUNT:-0}
   MEDIUM_COUNT=${MEDIUM_COUNT:-0}
   LOW_COUNT=${LOW_COUNT:-0}
-  TOTAL_COUNT=$((HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
+  TOTAL_COUNT=$((CRITICAL_COUNT + HIGH_COUNT + MEDIUM_COUNT + LOW_COUNT))
 
-  if [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
+  if [ "${CRITICAL_COUNT}" -lt 1 ] && [ "${HIGH_COUNT}" -lt 1 ] && [ "${MEDIUM_COUNT}" -lt 5 ]; then
     rm -f "${PENDING_EVENTS_FILE}"
-    echo "New alert IDs found, but thresholds not met (HIGH=${HIGH_COUNT}, MEDIUM=${MEDIUM_COUNT}). Skipping email."
+    echo "New alert IDs found, but thresholds not met (CRITICAL=${CRITICAL_COUNT}, HIGH=${HIGH_COUNT}, MEDIUM=${MEDIUM_COUNT}). Skipping email."
     exit 0
   fi
 
@@ -152,15 +158,15 @@ if [ "${REPORT_MODE}" = "minute" ]; then
 fi
 
 # Scheduled Report Mode (sends regular report including when only LOW severities exist)
-if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
-  echo "No HIGH or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
+if [ "${EMAIL_ONLY_ON_ALERTS}" = "true" ] && [ "${CRITICAL_COUNT}" -eq 0 ] && [ "${HIGH_COUNT}" -eq 0 ] && [ "${MEDIUM_COUNT}" -eq 0 ]; then
+  echo "No CRITICAL, HIGH, or MEDIUM alerts found. Skipping email (EMAIL_ONLY_ON_ALERTS=true)."
   exit 0
 fi
 STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 if [ "${REPORT_MODE}" = "minute" ]; then
-  SUBJECT="[HIDS Alert] ${HOSTNAME_STR} New Security Alert IDs - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+  SUBJECT="[HIDS Alert] ${HOSTNAME_STR} New Security Alert IDs - CRITICAL: ${CRITICAL_COUNT} | HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 else
-  SUBJECT="[HIDS Scheduled Report] ${HOSTNAME_STR} Security Update - HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+  SUBJECT="[HIDS Scheduled Report] ${HOSTNAME_STR} Security Update - CRITICAL: ${CRITICAL_COUNT} | HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 fi
 
 # Build professional HTML email payload file

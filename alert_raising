@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# HIDS Alert Raising Script
+# Triggers legitimate HIDS alerts across all severity levels:
+#   1. INFO     - System health telemetry scan
+#   2. LOW      - Baseline snapshot / routine health metric
+#   3. MEDIUM   - Suspicious process execution (e.g., netcat listener)
+#   4. HIGH     - Unwhitelisted network port binding / file integrity drift
+#   5. CRITICAL - Rootkit indicator (/etc/ld.so.preload) or untrusted SUID binary
+# ==============================================================================
+
+set -u
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HIDS_BIN="${PROJECT_ROOT}/HIDS.sh"
+
+# Colors for presentation output
+RED='\033[0;31m'
+BOLD_RED='\033[1;31m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log_section() {
+  echo -e "\n${BLUE}====================================================${NC}"
+  echo -e "${BLUE} > $1 ${NC}"
+  echo -e "${BLUE}====================================================${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 1. INFO Severity Trigger
+# ------------------------------------------------------------------------------
+trigger_info() {
+  log_section "Triggering INFO Severity Alert"
+  echo -e "${CYAN}[+] Running routine health metrics scan (SYS-100)...${NC}"
+  bash "${HIDS_BIN}" --once
+  echo -e "${GREEN}[✔] INFO event logged in .hids/hids.log${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 2. LOW Severity Trigger
+# ------------------------------------------------------------------------------
+trigger_low() {
+  log_section "Triggering LOW Severity Alert"
+  echo -e "${CYAN}[+] Creating/Refreshing baseline snapshot (LOW severity event)...${NC}"
+  bash "${HIDS_BIN}" --baseline
+  echo -e "${GREEN}[✔] LOW severity baseline event logged in .hids/hids.log${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 3. MEDIUM Severity Trigger
+# ------------------------------------------------------------------------------
+trigger_medium() {
+  log_section "Triggering MEDIUM Severity Alert"
+  echo -e "${YELLOW}[+] Launching suspicious binary (netcat / nc background listener)...${NC}"
+  
+  if command -v nc >/dev/null 2>&1; then
+    nc -l 9999 >/dev/null 2>&1 &
+    NC_PID=$!
+    echo $NC_PID > /tmp/hids_demo_nc.pid
+    echo -e "    Started 'nc' with PID ${NC_PID}"
+  elif command -v ncat >/dev/null 2>&1; then
+    ncat -l 9999 >/dev/null 2>&1 &
+    NC_PID=$!
+    echo $NC_PID > /tmp/hids_demo_nc.pid
+    echo -e "    Started 'ncat' with PID ${NC_PID}"
+  else
+    echo -e "${YELLOW}[!] 'nc' or 'ncat' not found, falling back to temporary user creation...${NC}"
+    sudo useradd -M -s /bin/false hids_temp_demo 2>/dev/null || true
+  fi
+
+  echo -e "${CYAN}[+] Executing HIDS scan...${NC}"
+  bash "${HIDS_BIN}" --once
+  echo -e "${GREEN}[✔] MEDIUM severity alert (PRC-009 / USR-004) generated!${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 4. HIGH Severity Trigger
+# ------------------------------------------------------------------------------
+trigger_high() {
+  log_section "Triggering HIGH Severity Alert"
+  echo -e "${RED}[+] Binding a new listener to unwhitelisted port 8888...${NC}"
+  
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m http.server 8888 >/dev/null 2>&1 &
+    PY_PID=$!
+    echo $PY_PID > /tmp/hids_demo_py.pid
+    echo -e "    Started Python HTTP server on port 8888 with PID ${PY_PID}"
+  else
+    echo -e "${RED}[!] Modifying monitored file .hids/demo_target.txt...${NC}"
+    mkdir -p "${PROJECT_ROOT}/.hids"
+    echo "malicious-change-high-$(date +%s)" >> "${PROJECT_ROOT}/.hids/demo_target.txt"
+  fi
+
+  echo -e "${CYAN}[+] Executing HIDS scan...${NC}"
+  bash "${HIDS_BIN}" --once
+  echo -e "${GREEN}[✔] HIGH severity alert (NET-001 / FIM-003) generated!${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 5. CRITICAL Severity Trigger
+# ------------------------------------------------------------------------------
+trigger_critical() {
+  log_section "Triggering CRITICAL Severity Alert"
+  echo -e "${BOLD_RED}[!] Scenario 1: Creating rootkit persistence file /etc/ld.so.preload...${NC}"
+  
+  if [ "$(id -u)" -eq 0 ]; then
+    touch /etc/ld.so.preload
+  else
+    sudo touch /etc/ld.so.preload
+  fi
+
+  echo -e "${BOLD_RED}[!] Scenario 2: Creating SUID binary in untrusted directory /tmp/hids_suid_demo...${NC}"
+  cp /bin/bash /tmp/hids_suid_demo 2>/dev/null || cp /bin/sh /tmp/hids_suid_demo
+  chmod u+s /tmp/hids_suid_demo
+
+  echo -e "${CYAN}[+] Executing HIDS scan...${NC}"
+  bash "${HIDS_BIN}" --once
+  echo -e "${GREEN}[✔] CRITICAL severity alert (FIM-008 / FIM-007) generated!${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# Cleanup Routine
+# ------------------------------------------------------------------------------
+cleanup() {
+  log_section "Cleaning Up Demo Scenarios"
+  
+  if [ -f /tmp/hids_demo_nc.pid ]; then
+    PID=$(cat /tmp/hids_demo_nc.pid)
+    kill -9 "$PID" 2>/dev/null || true
+    rm -f /tmp/hids_demo_nc.pid
+    echo -e "${GREEN}[✔] Stopped demo netcat listener (PID $PID)${NC}"
+  fi
+
+  if [ -f /tmp/hids_demo_py.pid ]; then
+    PID=$(cat /tmp/hids_demo_py.pid)
+    kill -9 "$PID" 2>/dev/null || true
+    rm -f /tmp/hids_demo_py.pid
+    echo -e "${GREEN}[✔] Stopped demo Python server (PID $PID)${NC}"
+  fi
+
+  pkill -f "python3 -m http.server 8888" 2>/dev/null || true
+  pkill -f "nc -l 9999" 2>/dev/null || true
+
+  if [ -f /etc/ld.so.preload ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+      rm -f /etc/ld.so.preload
+    else
+      sudo rm -f /etc/ld.so.preload
+    fi
+    echo -e "${GREEN}[✔] Removed /etc/ld.so.preload${NC}"
+  fi
+
+  if [ -f /tmp/hids_suid_demo ]; then
+    rm -f /tmp/hids_suid_demo
+    echo -e "${GREEN}[✔] Removed /tmp/hids_suid_demo${NC}"
+  fi
+
+  if id hids_temp_demo >/dev/null 2>&1; then
+    sudo userdel hids_temp_demo 2>/dev/null || true
+    echo -e "${GREEN}[✔] Removed temporary user hids_temp_demo${NC}"
+  fi
+
+  echo -e "${GREEN}[✔] Cleanup complete! System restored to normal state.${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# Usage / Main Menu
+# ------------------------------------------------------------------------------
+usage() {
+  echo "Usage: $0 {info|low|medium|high|critical|all|cleanup}"
+  echo ""
+  echo "Scenarios:"
+  echo "  info     - Trigger INFO alert (health scan telemetry)"
+  echo "  low      - Trigger LOW alert (baseline snapshot)"
+  echo "  medium   - Trigger MEDIUM alert (suspicious binary 'nc')"
+  echo "  high     - Trigger HIGH alert (unwhitelisted port 8888 listener)"
+  echo "  critical - Trigger CRITICAL alert (/etc/ld.so.preload & SUID binary)"
+  echo "  all      - Execute ALL scenarios in sequence"
+  echo "  cleanup  - Stop demo background tasks and remove demo files"
+  exit 1
+}
+
+case "${1:-}" in
+  info)
+    trigger_info
+    ;;
+  low)
+    trigger_low
+    ;;
+  medium)
+    trigger_medium
+    ;;
+  high)
+    trigger_high
+    ;;
+  critical)
+    trigger_critical
+    ;;
+  all)
+    trigger_info
+    trigger_low
+    trigger_medium
+    trigger_high
+    trigger_critical
+    ;;
+  cleanup)
+    cleanup
+    ;;
+  *)
+    usage
+    ;;
+esac
