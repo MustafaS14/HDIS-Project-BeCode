@@ -79,11 +79,6 @@ if [ ! -f "${LOG_FILE}" ]; then
   exit 1
 fi
 
-if [ "${REPORT_MODE}" = "instant" ]; then
-  echo "Instant alert email mode is disabled; scheduled email reports are still active."
-  exit 0
-fi
-
 # Extract recent log entries (rolling window shown in the email body/summary)
 RECENT_EVENTS="$(tail -n "${LINES_COUNT}" "${LOG_FILE}" 2>/dev/null || true)"
 
@@ -165,6 +160,8 @@ fi
 STAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 if [ "${REPORT_MODE}" = "minute" ]; then
   SUBJECT="[HIDS Alert] ${HOSTNAME_STR} New Security Alert IDs - CRITICAL: ${CRITICAL_COUNT} | HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
+elif [ "${REPORT_MODE}" = "instant" ]; then
+  SUBJECT="[HIDS Instant Alert] ${HOSTNAME_STR} Security Alert - CRITICAL: ${CRITICAL_COUNT} | HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 else
   SUBJECT="[HIDS Scheduled Report] ${HOSTNAME_STR} Security Update - CRITICAL: ${CRITICAL_COUNT} | HIGH: ${HIGH_COUNT} | MEDIUM: ${MEDIUM_COUNT} | LOW: ${LOW_COUNT}"
 fi

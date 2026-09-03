@@ -7,6 +7,18 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${PROJECT_ROOT}/.hids"
 LOG_FILE="${STATE_DIR}/hids.log"
 BASELINE_DIR="${STATE_DIR}/baseline"
+
+load_local_environment() {
+  local config_file="${PROJECT_ROOT}/email_config.env"
+
+  if [ -f "${config_file}" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "${config_file}"
+    set +a
+  fi
+}
+
 DEMO_FILE="${STATE_DIR}/demo_target.txt"
 SUSPICIOUS_PORT="8888"
 ZERO_HASH="0000000000000000000000000000000000000000000000000000000000000000"
@@ -1383,7 +1395,7 @@ main() {
       ;;
     --email-report)
       run_checks
-      send_email_after_scan
+      send_email_after_scan --instant
       ;;
     --minute-scan)
       run_checks
@@ -1431,4 +1443,5 @@ main() {
   esac
 }
 
+load_local_environment
 main "$@"
