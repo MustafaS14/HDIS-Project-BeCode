@@ -803,7 +803,7 @@ check_recon_commands() {
   fi
 
   local summary
-  summary="$(printf '%s\n' "${matched_lines[@]}" | sort | uniq -c | awk '{count=$1; $1=""; sub(/^ /,""); printf "%dx %s; ", count, $0}')"
+  summary="$(printf '%s\n' "${matched_lines[@]}" | sed 's/^\[[^]]*\] //' | sort -u | paste -sd ';' -)"
 
   log_event "HIGH" "user_activity" "Prohibited command activity detected (reconnaissance, SUID scan, or history tampering): ${summary}"
   if [ "${#fresh_command_matches[@]}" -gt 0 ]; then
